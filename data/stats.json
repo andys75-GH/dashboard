@@ -2379,4 +2379,4 @@
     "itemsToBeSent": 49,
     "itemsToBeReturned": 74
   }
-]
+,{"date":"2026-09-14","bookedOutToday":0,"bookedInToday":0,"itemsToBeSent":64,"itemsToBeReturned":70,"callLogsTotal":13,"callLogs_0_1w":8,"callLogs_1_2w":3,"engineerVisits":3,"notSent":64,"needsReturning":32,"collectionArranged":34,"returnChased":1}]
