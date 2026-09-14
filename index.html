@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leisure Electronics Dashboard</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+  body { background: #11111b; color: #cdd6f4; font-family: 'DM Sans', sans-serif; }
+  button { cursor: pointer; }
+  textarea, input { font-family: inherit; }
+  .tb { border: 1px solid #313244; border-radius: 8px; padding: 8px 16px; font-family: 'Syne', sans-serif; font-weight: 700; font-size: 13px; background: none; transition: all .15s; }
+  .tb:hover { border-color: #585b70; color: #cdd6f4; }
+  @keyframes pulse { 0%,100%{opacity:.2} 50%{opacity:1} }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #181825; }
+  ::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+const { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } = Recharts;
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+const BASE = location.pathname.replace(/\/[^/]*$/, '');
+async function loadData(file) {
+  const res = await fetch(`${BASE}/data/${file}?_=${Date.now()}`);
+  if (!res.ok) throw new Error(`Failed to load ${file}`);
+  return res.json();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const METRICS = [
+  { key:"callLogsTotal", label:"Call Logs Total", group:"calls", color:"#f97316" },
+  { key:"callLogs_0_1w", label:"0-1 Weeks", group:"calls", color:"#fb923c" },
+  { key:"callLogs_1_2w", label:"1-2 Weeks", group:"calls", color:"#fdba74" },
+  { key:"engineerVisits", label:"Engineer Visits", group:"calls", color:"#c2410c" },
+  { key:"notSent", label:"Not Sent", group:"tablets", color:"#3b82f6" },
+  { key:"needsReturning", label:"Needs Returning", group:"tablets", color:"#6366f1" },
+  { key:"collectionArranged", label:"Collection Arranged", group:"tablets", color:"#8b5cf6" },
+  { key:"returnExpiring1", label:"Return Expiring", group:"tablets", color:"#ec4899" },
+  { key:"returnChased", label:"Return Chased Up", group:"tablets", color:"#14b8a6" },
+  { key:"itemsToBeSent", label:"Items to Send", group:"summary", color:"#22c55e" },
+  { key:"itemsToBeReturned", label:"Items to Return", group:"summary", color:"#84cc16" },
+  { key:"bookedOutToday", label:"Booked Out", group:"summary", color:"#eab308" },
+  { key:"bookedInToday", label:"Booked In", group:"summary", color:"#f59e0b" },
+];
+const GROUP_LABELS = { calls:"Call Logs", tablets:"Tablets", summary:"Today's Summary" };
+
+function formatDate(iso) {
+  return new Date(iso).toLocaleDateString("en-GB", { day:"2-digit", month:"short" });
+}
+function filterByRange(entries, range) {
+  const now = new Date(), cutoff = new Date(now);
+  if (range==="7d") cutoff.setDate(now.getDate()-7);
+  else if (range==="30d") cutoff.setDate(now.getDate()-30);
+  else if (range==="90d") cutoff.setDate(now.getDate()-90);
+  else return entries;
+  return entries.filter(e => new Date(e.date) >= cutoff);
+}
+
+// ── Stats alerts ──────────────────────────────────────────────────────────────
+function detectAlerts(entries) {
+  if (entries.length < 3) return [];
+  const alerts = [];
+  const recent = [...entries].sort((a,b) => a.date.localeCompare(b.date));
+  let returnStreak=0, returnStreakStart=null;
+  for (const e of recent) {
+    if ((e.itemsToBeReturned??0) > 100) {
+      if (returnStreak===0) returnStreakStart=e.date;
+      returnStreak++;
+      if (returnStreak>=3) alerts.push({ id:"return-streak", level:returnStreak>=5?"critical":"warning", title:"Items to Return elevated", detail:`Above 100 for ${returnStreak} consecutive days (since ${formatDate(returnStreakStart)})`, latest:e.itemsToBeReturned, metric:"itemsToBeReturned" });
+    } else { returnStreak=0; returnStreakStart=null; }
+  }
+  let outStreak=0, outStreakStart=null;
+  for (const e of recent) {
+    if ((e.bookedOutToday??0) > 25) {
+      if (outStreak===0) outStreakStart=e.date;
+      outStreak++;
+      if (outStreak>=3) alerts.push({ id:"bookout-streak", level:outStreak>=5?"critical":"warning", title:"High daily bookings out", detail:`Above 25 for ${outStreak} consecutive days (since ${formatDate(outStreakStart)})`, latest:e.bookedOutToday, metric:"bookedOutToday" });
+    } else { outStreak=0; outStreakStart=null; }
+  }
+  const seen=new Set();
+  return alerts.filter(a=>{ if(seen.has(a.id)) return false; seen.add(a.id); return true; }).reverse();
+}
+
+// ── Disconnect helpers ────────────────────────────────────────────────────────
+function getDisconnectStreaks(reports) {
+  const sorted=[...reports].sort((a,b)=>a.date.localeCompare(b.date));
+  const streaks={};
+  const allDates=sorted.map(r=>r.date);
+  for (const report of sorted) {
+    const siteIds=new Set(report.sites.map(s=>s.id));
+    for (const site of report.sites) {
+      if (!streaks[site.id]) { streaks[site.id]={name:site.name,flag:site.flag,streak:1,lastDate:report.date,startDate:report.date}; }
+      else {
+        const lastIdx=allDates.indexOf(streaks[site.id].lastDate);
+        const currIdx=allDates.indexOf(report.date);
+        if (currIdx===lastIdx+1) { streaks[site.id].streak++; streaks[site.id].lastDate=report.date; streaks[site.id].flag=site.flag; }
+        else { streaks[site.id]={name:site.name,flag:site.flag,streak:1,lastDate:report.date,startDate:report.date}; }
+      }
+    }
+  }
+  return streaks;
+}
+
+// ── DB corruption helpers ─────────────────────────────────────────────────────
+function getDbCorruptionCounts(emails, referenceDate) {
+  const ref=new Date(referenceDate), cutoff=new Date(ref);
+  cutoff.setDate(cutoff.getDate()-30);
+  const counts={};
+  for (const e of emails) {
+    const d=new Date(e.date);
+    if (d>=cutoff && d<=ref) {
+      if (!counts[e.site]) counts[e.site]={count:0,dates:[]};
+      counts[e.site].count++;
+      if (!counts[e.site].dates.includes(e.date)) counts[e.site].dates.push(e.date);
+    }
+  }
+  return counts;
+}
+
+// ── Fraud helpers ─────────────────────────────────────────────────────────────
+function getFraudAlerts(emails) {
+  const sorted=[...emails].sort((a,b)=>a.date.localeCompare(b.date));
+  const bysite={};
+  for (const e of sorted) { if (!bysite[e.site]) bysite[e.site]=[]; bysite[e.site].push(e.date); }
+  const triggered={};
+  for (const [site,dates] of Object.entries(bysite)) {
+    for (let i=0;i<dates.length;i++) {
+      const ws=new Date(dates[i]), we=new Date(dates[i]);
+      we.setDate(we.getDate()+7);
+      const inW=dates.filter(d=>{ const dd=new Date(d); return dd>=ws&&dd<=we; });
+      if (inW.length>=2) { if (!triggered[site]||triggered[site].count<inW.length) triggered[site]={count:inW.length,dates:inW,firstDate:inW[0],lastDate:inW[inW.length-1]}; }
+    }
+  }
+  return triggered;
+}
+
+// ── GTab helpers ──────────────────────────────────────────────────────────────
+function getGtabAlerts(reports) {
+  const sorted=[...reports].sort((a,b)=>a.date.localeCompare(b.date));
+  const latest=sorted[sorted.length-1];
+  const halfAlerts=[];
+  const streakAlerts=[];
+  if (latest) {
+    for (const site of latest.sites) {
+      if (site.noData) continue;
+      const pct=site.installed>0?site.inactive/site.installed:0;
+      if (pct>=0.5) halfAlerts.push({...site,pct:Math.round(pct*100),date:latest.date});
+    }
+  }
+  const positionDays={};
+  for (const report of sorted) {
+    for (const site of report.sites) {
+      if (site.noData) continue;
+      for (const pos of site.positions) {
+        const key=`${site.id}:${pos}`;
+        if (!positionDays[key]) positionDays[key]={name:site.name,id:site.id,pos,dates:[]};
+        positionDays[key].dates.push(report.date);
+      }
+    }
+  }
+  const dates=sorted.map(r=>r.date);
+  for (const [,info] of Object.entries(positionDays)) {
+    const ds=[...new Set(info.dates)].sort();
+    let streak=1,streakStart=ds[0];
+    for (let i=1;i<ds.length;i++) {
+      const prevIdx=dates.indexOf(ds[i-1]), currIdx=dates.indexOf(ds[i]);
+      if (currIdx===prevIdx+1) { streak++; if(streak>=13) streakAlerts.push({id:info.id,name:info.name,pos:info.pos,days:streak,since:streakStart,lastDate:ds[i]}); }
+      else { streak=1; streakStart=ds[i]; }
+    }
+  }
+  return {halfAlerts:halfAlerts.sort((a,b)=>b.pct-a.pct),streakAlerts,latest};
+}
+
+// ── Alert Banner (shared) ─────────────────────────────────────────────────────
+function AlertBanner({ alerts, ackedKey }) {
+  const today=new Date().toISOString().slice(0,10);
+  const [acked,setAcked]=useState(()=>{ try { const s=JSON.parse(localStorage.getItem(ackedKey)||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } });
+  const acknowledge=(id)=>{ const next={...acked,[id]:today}; setAcked(next); try{localStorage.setItem(ackedKey,JSON.stringify(next));}catch{} };
+  const visible=alerts.filter(a=>acked[a.id]!==today);
+  if (!visible.length) return null;
+  const colours={ warning:{bg:"#2a1f00",border:"#f59e0b",text:"#fbbf24",badge:"#f59e0b",btn:"#78520a"}, critical:{bg:"#2a0a0a",border:"#f38ba8",text:"#f38ba8",badge:"#f38ba8",btn:"#7a2030"} };
+  return (
+    <div style={{display:"grid",gap:8,marginBottom:20}}>
+      {visible.map(a=>{ const c=colours[a.level]; return (
+        <div key={a.id} style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <span style={{background:c.badge,color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:10,padding:"2px 7px",borderRadius:4,whiteSpace:"nowrap",textTransform:"uppercase"}}>{a.level==="critical"?"Critical":"Alert"}</span>
+          <div style={{flex:1,minWidth:160}}>
+            <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13}}>{a.title}</span>
+            <span style={{color:"#6c7086",fontFamily:"DM Mono,monospace",fontSize:12,marginLeft:10}}>{a.detail}</span>
+          </div>
+          <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:18}}>{a.latest}</span>
+          <button onClick={()=>acknowledge(a.id)} style={{background:c.btn,border:`1px solid ${c.border}`,borderRadius:6,color:"#cdd6f4",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"5px 12px",whiteSpace:"nowrap"}} onMouseOver={e=>e.target.style.opacity="0.75"} onMouseOut={e=>e.target.style.opacity="1"}>Acknowledge</button>
+        </div>
+      );})}
+    </div>
+  );
+}
+
+// ── Charts Tab ────────────────────────────────────────────────────────────────
+function ChartsTab({ entries }) {
+  const [range,setRange]=useState("30d");
+  const [activeGroup,setActiveGroup]=useState("summary");
+  const statsAlerts=detectAlerts(entries);
+  const filtered=filterByRange(entries,range);
+  const chartData=filtered.map(e=>({...e,label:formatDate(e.date)}));
+  const groupMetrics=METRICS.filter(m=>m.group===activeGroup);
+  const latestEntry=entries[entries.length-1];
+
+  const statAlertsMapped=statsAlerts.map(a=>({...a,detail:a.detail}));
+
+  return (
+    <div style={{display:"grid",gap:20}}>
+      <AlertBanner alerts={statAlertsMapped} ackedKey="alert-acks" />
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        {["7d","30d","90d","All"].map(r=>(
+          <button key={r} className="tb" onClick={()=>setRange(r)} style={{background:range===r?"#313244":"none",borderColor:range===r?"#45475a":"#313244",color:range===r?"#cdd6f4":"#6c7086"}}>{r}</button>
+        ))}
+        <span style={{color:"#45475a",margin:"0 4px"}}>|</span>
+        {Object.entries(GROUP_LABELS).map(([g,label])=>(
+          <button key={g} className="tb" onClick={()=>setActiveGroup(g)} style={{background:activeGroup===g?"#313244":"none",borderColor:activeGroup===g?"#45475a":"#313244",color:activeGroup===g?"#cdd6f4":"#6c7086"}}>{label}</button>
+        ))}
+      </div>
+      {latestEntry && (
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:10}}>
+          {groupMetrics.map(m=>{
+            const vals=entries.map(e=>e[m.key]).filter(v=>v!=null);
+            const latest=latestEntry[m.key];
+            const avg=vals.length?Math.round(vals.reduce((s,v)=>s+v,0)/vals.length):null;
+            const max=vals.length?Math.max(...vals):null;
+            return (
+              <div key={m.key} style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:10,padding:"12px 14px"}}>
+                <p style={{margin:"0 0 4px",fontFamily:"DM Mono,monospace",fontSize:10,color:"#6c7086",textTransform:"uppercase",letterSpacing:".06em"}}>{m.label}</p>
+                <p style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:22,fontWeight:800,color:m.color}}>{latest??"-"}</p>
+                {avg!=null&&<p style={{margin:"4px 0 0",fontFamily:"DM Mono,monospace",fontSize:10,color:"#45475a"}}>avg {avg} / max {max}</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,padding:"16px 12px"}}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={chartData} margin={{top:4,right:8,bottom:0,left:-20}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#313244" />
+            <XAxis dataKey="label" tick={{fill:"#6c7086",fontSize:10}} tickLine={false} />
+            <YAxis tick={{fill:"#6c7086",fontSize:10}} tickLine={false} />
+            <Tooltip content={({active,payload,label})=>{
+              if(!active||!payload?.length) return null;
+              return <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:8,padding:"10px 14px"}}><p style={{color:"#cdd6f4",margin:"0 0 6px",fontFamily:"DM Mono,monospace",fontSize:12}}>{label}</p>{payload.map(p=><p key={p.dataKey} style={{color:p.color,margin:"2px 0",fontSize:13,fontFamily:"DM Mono,monospace"}}>{p.name}: <strong>{p.value}</strong></p>)}</div>;
+            }} />
+            <Legend wrapperStyle={{fontSize:12,color:"#6c7086"}} />
+            {groupMetrics.map(m=><Line key={m.key} type="monotone" dataKey={m.key} name={m.label} stroke={m.color} dot={false} strokeWidth={2} connectNulls />)}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,padding:"16px 12px"}}>
+        <ResponsiveContainer width="100%" height={200}>
+          <BarChart data={chartData.slice(-30)} margin={{top:4,right:8,bottom:0,left:-20}}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#313244" />
+            <XAxis dataKey="label" tick={{fill:"#6c7086",fontSize:10}} tickLine={false} />
+            <YAxis tick={{fill:"#6c7086",fontSize:10}} tickLine={false} />
+            <Tooltip content={({active,payload,label})=>{
+              if(!active||!payload?.length) return null;
+              return <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:8,padding:"10px 14px"}}><p style={{color:"#cdd6f4",margin:"0 0 6px",fontFamily:"DM Mono,monospace",fontSize:12}}>{label}</p>{payload.map(p=><p key={p.dataKey} style={{color:p.color,margin:"2px 0",fontSize:13,fontFamily:"DM Mono,monospace"}}>{p.name}: <strong>{p.value}</strong></p>)}</div>;
+            }} />
+            <Legend wrapperStyle={{fontSize:12,color:"#6c7086"}} />
+            {groupMetrics.slice(0,2).map(m=><Bar key={m.key} dataKey={m.key} name={m.label} fill={m.color} radius={[3,3,0,0]} />)}
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+// ── Disconnects Tab ───────────────────────────────────────────────────────────
+function DisconnectTab({ reports }) {
+  const today=new Date().toISOString().slice(0,10);
+  const [acked,setAcked]=useState(()=>{ try { const s=JSON.parse(localStorage.getItem("disconnect-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } });
+  const acknowledge=(id)=>{ const next={...acked,[id]:today}; setAcked(next); try{localStorage.setItem("disconnect-acks",JSON.stringify(next));}catch{} };
+
+  const streaks=getDisconnectStreaks(reports);
+  const latest=[...reports].sort((a,b)=>b.date.localeCompare(a.date))[0];
+  const latestSites=latest?.sites||[];
+  const alertSites=Object.entries(streaks).filter(([,s])=>s.streak>=3&&s.lastDate===latest?.date).sort((a,b)=>b[1].streak-a[1].streak);
+  const flagColour=(flag)=>{
+    if(flag==="CHECK") return {bg:"#2a1f00",border:"#f59e0b",text:"#fbbf24",label:"CHECK"};
+    if(flag==="CLOSED_SUNDAYS") return {bg:"#1a1a2e",border:"#6366f1",text:"#818cf8",label:"Closed Sun"};
+    return null;
+  };
+
+  return (
+    <div style={{display:"grid",gap:16}}>
+      {alertSites.length>0&&(
+        <div style={{display:"grid",gap:8}}>
+          <p style={{margin:0,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,color:"#f38ba8",textTransform:"uppercase",letterSpacing:".08em"}}>Persistent Disconnects - 3+ Consecutive Days</p>
+          {alertSites.map(([id,s])=>{
+            if(acked[id]===today) return null;
+            const days=s.streak, level=days>=5?"critical":"warning";
+            const c=level==="critical"?{bg:"#2a0a0a",border:"#f38ba8",text:"#f38ba8",badge:"#f38ba8",btn:"#7a2030"}:{bg:"#2a1f00",border:"#f59e0b",text:"#fbbf24",badge:"#f59e0b",btn:"#78520a"};
+            return (
+              <div key={id} style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                <span style={{background:c.badge,color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:10,padding:"2px 7px",borderRadius:4,textTransform:"uppercase"}}>{level==="critical"?"Critical":"Alert"}</span>
+                <div style={{flex:1,minWidth:160}}>
+                  <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13}}>{id} {s.name}</span>
+                  <span style={{color:"#6c7086",fontFamily:"DM Mono,monospace",fontSize:12,marginLeft:10}}>Disconnected {days} days in a row (since {formatDate(s.startDate)})</span>
+                </div>
+                <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:18}}>{days}d</span>
+                <button onClick={()=>acknowledge(id)} style={{background:c.btn,border:`1px solid ${c.border}`,borderRadius:6,color:"#cdd6f4",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"5px 12px",whiteSpace:"nowrap"}} onMouseOver={e=>e.target.style.opacity="0.75"} onMouseOut={e=>e.target.style.opacity="1"}>Acknowledge</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div>
+            <h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#cdd6f4"}}>Latest Disconnect Report</h2>
+            <p style={{margin:"2px 0 0",fontFamily:"DM Mono,monospace",fontSize:11,color:"#6c7086"}}>{latest?formatDate(latest.date):"No reports"} - {latestSites.length} site{latestSites.length!==1?"s":""} disconnected</p>
+          </div>
+          {alertSites.length>0&&<span style={{background:"#f38ba8",color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"3px 10px",borderRadius:20}}>{alertSites.length} persistent</span>}
+        </div>
+        <div style={{padding:"8px 0"}}>
+          {latestSites.length===0?<p style={{margin:0,padding:"20px",color:"#6c7086",fontFamily:"DM Mono,monospace",fontSize:13,textAlign:"center"}}>No disconnects reported</p>:latestSites.map(site=>{
+            const fc=flagColour(site.flag), streak=streaks[site.id]?.streak||1, isAlert=streak>=3;
+            return (
+              <div key={site.id} style={{padding:"10px 20px",borderBottom:"1px solid #181825",display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontFamily:"DM Mono,monospace",fontSize:12,color:"#585b70",minWidth:36}}>{site.id}</span>
+                <span style={{fontFamily:"DM Sans,sans-serif",fontSize:13,color:isAlert?"#fbbf24":"#cdd6f4",fontWeight:isAlert?600:400,flex:1}}>{site.name}</span>
+                {isAlert&&<span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"#f38ba8",background:"#2a0a0a",border:"1px solid #f38ba8",borderRadius:4,padding:"1px 6px",whiteSpace:"nowrap"}}>{streak} days</span>}
+                {fc&&<span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:fc.text,background:fc.bg,border:`1px solid ${fc.border}`,borderRadius:4,padding:"1px 6px",whiteSpace:"nowrap"}}>{fc.label}</span>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244"}}><h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#a6adc8"}}>Recent History</h2></div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:"DM Mono,monospace"}}>
+            <thead><tr style={{background:"#181825"}}>
+              <th style={{padding:"9px 16px",textAlign:"left",color:"#6c7086",fontWeight:500}}>Date</th>
+              <th style={{padding:"9px 16px",textAlign:"left",color:"#6c7086",fontWeight:500}}>Disconnected Sites</th>
+              <th style={{padding:"9px 12px",textAlign:"right",color:"#6c7086",fontWeight:500}}>Count</th>
+            </tr></thead>
+            <tbody>
+              {[...reports].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,10).map(r=>(
+                <tr key={r.date} style={{borderTop:"1px solid #313244"}}>
+                  <td style={{padding:"9px 16px",color:"#6c7086",whiteSpace:"nowrap"}}>{formatDate(r.date)}</td>
+                  <td style={{padding:"9px 16px",color:"#a6adc8",lineHeight:1.8}}>
+                    {r.sites.map(s=>{ const fc=flagColour(s.flag); const str=streaks[s.id]?.streak||1; return (<span key={s.id} style={{marginRight:8,display:"inline-block"}}><span style={{color:str>=3?"#fbbf24":"#cdd6f4"}}>{s.id} {s.name}</span>{fc&&<span style={{color:fc.text,marginLeft:4}}>({fc.label})</span>}</span>); })}
+                  </td>
+                  <td style={{padding:"9px 12px",textAlign:"right",color:"#cdd6f4",fontWeight:700}}>{r.sites.length}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DB Corruption Tab ─────────────────────────────────────────────────────────
+function DbCorruptionTab({ emails }) {
+  const today=new Date().toISOString().slice(0,10);
+  const [acked,setAcked]=useState(()=>{ try { const s=JSON.parse(localStorage.getItem("dbcorrupt-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } });
+  const acknowledge=(site)=>{ const next={...acked,[site]:today}; setAcked(next); try{localStorage.setItem("dbcorrupt-acks",JSON.stringify(next));}catch{} };
+  const counts=getDbCorruptionCounts(emails,today);
+  const sorted=Object.entries(counts).sort((a,b)=>b[1].count-a[1].count);
+  const alerts=sorted.filter(([,v])=>v.count>3);
+  const recent=[...emails].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,15);
+  return (
+    <div style={{display:"grid",gap:16}}>
+      {alerts.length>0&&(
+        <div style={{display:"grid",gap:8}}>
+          <p style={{margin:0,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,color:"#f38ba8",textTransform:"uppercase",letterSpacing:".08em"}}>Recurring DB Corruption - More than 3 times in 30 days</p>
+          {alerts.map(([site,v])=>{
+            if(acked[site]===today) return null;
+            const level=v.count>=6?"critical":"warning";
+            const c=level==="critical"?{bg:"#2a0a0a",border:"#f38ba8",text:"#f38ba8",badge:"#f38ba8",btn:"#7a2030"}:{bg:"#2a1f00",border:"#f59e0b",text:"#fbbf24",badge:"#f59e0b",btn:"#78520a"};
+            return (
+              <div key={site} style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                <span style={{background:c.badge,color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:10,padding:"2px 7px",borderRadius:4,textTransform:"uppercase"}}>{level==="critical"?"Critical":"Alert"}</span>
+                <div style={{flex:1,minWidth:160}}>
+                  <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13}}>{site}</span>
+                  <span style={{color:"#6c7086",fontFamily:"DM Mono,monospace",fontSize:12,marginLeft:10}}>{v.count}x in 30 days - last {formatDate(v.dates.sort().slice(-1)[0])}</span>
+                </div>
+                <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22}}>{v.count}</span>
+                <button onClick={()=>acknowledge(site)} style={{background:c.btn,border:`1px solid ${c.border}`,borderRadius:6,color:"#cdd6f4",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"5px 12px",whiteSpace:"nowrap"}} onMouseOver={e=>e.target.style.opacity="0.75"} onMouseOut={e=>e.target.style.opacity="1"}>Acknowledge</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div><h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#cdd6f4"}}>Rolling 30-Day Count</h2><p style={{margin:"2px 0 0",fontFamily:"DM Mono,monospace",fontSize:11,color:"#6c7086"}}>{sorted.length} sites affected</p></div>
+          {alerts.length>0&&<span style={{background:"#f38ba8",color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"3px 10px",borderRadius:20}}>{alerts.length} over threshold</span>}
+        </div>
+        <div>
+          {sorted.map(([site,v])=>{
+            const pct=Math.min(100,(v.count/Math.max(...sorted.map(([,x])=>x.count)))*100);
+            const over=v.count>3, colour=over?"#f38ba8":v.count===3?"#f59e0b":"#6366f1";
+            return (
+              <div key={site} style={{padding:"10px 20px",borderBottom:"1px solid #181825"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:5}}>
+                  <span style={{fontFamily:"DM Sans,sans-serif",fontSize:13,color:over?"#fbbf24":"#cdd6f4",fontWeight:over?600:400,flex:1}}>{site}</span>
+                  <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:14,color:colour}}>{v.count}</span>
+                  {over&&<span style={{fontFamily:"DM Mono,monospace",fontSize:10,color:"#f38ba8",background:"#2a0a0a",border:"1px solid #f38ba8",borderRadius:4,padding:"1px 6px"}}>ALERT</span>}
+                </div>
+                <div style={{background:"#313244",borderRadius:3,height:4}}><div style={{background:colour,borderRadius:3,height:4,width:`${pct}%`,transition:"width .3s"}}/></div>
+                <div style={{marginTop:4,fontFamily:"DM Mono,monospace",fontSize:10,color:"#45475a"}}>{v.dates.sort().map(d=>formatDate(d)).join(" . ")}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244"}}><h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#a6adc8"}}>Recent Events</h2></div>
+        <div>
+          {recent.map((e,i)=>{ const siteCount=counts[e.site]?.count||0, over=siteCount>3; return (
+            <div key={i} style={{padding:"9px 20px",borderBottom:"1px solid #181825",display:"flex",alignItems:"center",gap:12}}>
+              <span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"#585b70",minWidth:60,whiteSpace:"nowrap"}}>{formatDate(e.date)}</span>
+              <span style={{fontFamily:"DM Sans,sans-serif",fontSize:13,color:over?"#fbbf24":"#cdd6f4",flex:1,fontWeight:over?600:400}}>{e.site}</span>
+              {over&&<span style={{fontFamily:"DM Mono,monospace",fontSize:10,color:"#f38ba8",background:"#2a0a0a",border:"1px solid #f38ba8",borderRadius:4,padding:"1px 6px",whiteSpace:"nowrap"}}>{siteCount}x / 30d</span>}
+            </div>
+          );})}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Fraud Tab ─────────────────────────────────────────────────────────────────
+function FraudTab({ emails }) {
+  const today=new Date().toISOString().slice(0,10);
+  const [acked,setAcked]=useState(()=>{ try { const s=JSON.parse(localStorage.getItem("fraud-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } });
+  const acknowledge=(site)=>{ const next={...acked,[site]:today}; setAcked(next); try{localStorage.setItem("fraud-acks",JSON.stringify(next));}catch{} };
+  const fraudAlerts=getFraudAlerts(emails);
+  const alertEntries=Object.entries(fraudAlerts).sort((a,b)=>b[1].count-a[1].count);
+  const recent=[...emails].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,20);
+  const allCounts={};
+  for (const e of emails) allCounts[e.site]=(allCounts[e.site]||0)+1;
+  const siteSummary=Object.entries(allCounts).sort((a,b)=>b[1]-a[1]);
+  return (
+    <div style={{display:"grid",gap:16}}>
+      {alertEntries.length>0&&(
+        <div style={{display:"grid",gap:8}}>
+          <p style={{margin:0,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,color:"#f38ba8",textTransform:"uppercase",letterSpacing:".08em"}}>Repeated Fraud Attempts -- Same site within 7 days</p>
+          {alertEntries.map(([site,v])=>{
+            if(acked[site]===today) return null;
+            const level=v.count>=4?"critical":"warning";
+            const c=level==="critical"?{bg:"#2a0a0a",border:"#f38ba8",text:"#f38ba8",badge:"#f38ba8",btn:"#7a2030"}:{bg:"#2a1f00",border:"#f59e0b",text:"#fbbf24",badge:"#f59e0b",btn:"#78520a"};
+            return (
+              <div key={site} style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                <span style={{background:c.badge,color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:10,padding:"2px 7px",borderRadius:4,textTransform:"uppercase"}}>{level==="critical"?"Critical":"Alert"}</span>
+                <div style={{flex:1,minWidth:160}}>
+                  <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13}}>{site}</span>
+                  <span style={{color:"#6c7086",fontFamily:"DM Mono,monospace",fontSize:12,marginLeft:10}}>{v.count} attempts within 7 days ({formatDate(v.firstDate)} to {formatDate(v.lastDate)})</span>
+                </div>
+                <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22}}>{v.count}</span>
+                <button onClick={()=>acknowledge(site)} style={{background:c.btn,border:`1px solid ${c.border}`,borderRadius:6,color:"#cdd6f4",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"5px 12px",whiteSpace:"nowrap"}} onMouseOver={e=>e.target.style.opacity="0.75"} onMouseOut={e=>e.target.style.opacity="1"}>Acknowledge</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div><h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#cdd6f4"}}>All-Time by Site</h2><p style={{margin:"2px 0 0",fontFamily:"DM Mono,monospace",fontSize:11,color:"#6c7086"}}>{siteSummary.length} sites - {emails.length} total incidents</p></div>
+          {alertEntries.length>0&&<span style={{background:"#f38ba8",color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"3px 10px",borderRadius:20}}>{alertEntries.length} active alert{alertEntries.length!==1?"s":""}</span>}
+        </div>
+        <div>
+          {siteSummary.map(([site,count])=>{
+            const hasAlert=!!fraudAlerts[site], pct=Math.min(100,(count/Math.max(...siteSummary.map(([,c])=>c)))*100), colour=hasAlert?"#f38ba8":"#6366f1";
+            return (
+              <div key={site} style={{padding:"10px 20px",borderBottom:"1px solid #181825"}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:5}}>
+                  <span style={{fontFamily:"DM Sans,sans-serif",fontSize:13,color:hasAlert?"#fbbf24":"#cdd6f4",fontWeight:hasAlert?600:400,flex:1}}>{site}</span>
+                  <span style={{fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:14,color:colour}}>{count}</span>
+                  {hasAlert&&<span style={{fontFamily:"DM Mono,monospace",fontSize:10,color:"#f38ba8",background:"#2a0a0a",border:"1px solid #f38ba8",borderRadius:4,padding:"1px 6px"}}>7d ALERT</span>}
+                </div>
+                <div style={{background:"#313244",borderRadius:3,height:4}}><div style={{background:colour,borderRadius:3,height:4,width:`${pct}%`,transition:"width .3s"}}/></div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244"}}><h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#a6adc8"}}>Recent Events</h2></div>
+        <div>
+          {recent.map((e,i)=>{ const hasAlert=!!fraudAlerts[e.site]; return (
+            <div key={i} style={{padding:"9px 20px",borderBottom:"1px solid #181825",display:"flex",alignItems:"center",gap:12}}>
+              <span style={{fontFamily:"DM Mono,monospace",fontSize:11,color:"#585b70",minWidth:60,whiteSpace:"nowrap"}}>{formatDate(e.date)}</span>
+              <span style={{fontFamily:"DM Sans,sans-serif",fontSize:13,color:hasAlert?"#fbbf24":"#cdd6f4",flex:1,fontWeight:hasAlert?600:400}}>{e.site}</span>
+              {hasAlert&&<span style={{fontFamily:"DM Mono,monospace",fontSize:10,color:"#f38ba8",background:"#2a0a0a",border:"1px solid #f38ba8",borderRadius:4,padding:"1px 6px",whiteSpace:"nowrap"}}>repeated</span>}
+            </div>
+          );})}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── GTab Tab ──────────────────────────────────────────────────────────────────
+function GtabTab({ reports }) {
+  const today=new Date().toISOString().slice(0,10);
+  const [acked,setAcked]=useState(()=>{ try { const s=JSON.parse(localStorage.getItem("gtab-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } });
+  const acknowledge=(key)=>{ const next={...acked,[key]:today}; setAcked(next); try{localStorage.setItem("gtab-acks",JSON.stringify(next));}catch{} };
+  const {halfAlerts,streakAlerts,latest}=getGtabAlerts(reports);
+  const sorted=[...reports].sort((a,b)=>b.date.localeCompare(a.date));
+  const visibleHalf=halfAlerts.filter(a=>!acked[`half:${a.id}`]);
+  const visibleStreak=streakAlerts.filter(a=>!acked[`streak:${a.id}:${a.pos}`]);
+  return (
+    <div style={{display:"grid",gap:16}}>
+      {visibleHalf.length>0&&(
+        <div style={{display:"grid",gap:8}}>
+          <p style={{margin:0,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,color:"#f38ba8",textTransform:"uppercase",letterSpacing:".08em"}}>50%+ Tablets Inactive</p>
+          {visibleHalf.map(a=>{ const c={bg:"#2a0a0a",border:"#f38ba8",text:"#f38ba8",badge:"#f38ba8",btn:"#7a2030"}; return (
+            <div key={a.id} style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <span style={{background:c.badge,color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:10,padding:"2px 7px",borderRadius:4,textTransform:"uppercase"}}>Critical</span>
+              <div style={{flex:1,minWidth:160}}>
+                <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13}}>{a.id} - {a.name}</span>
+                <span style={{color:"#6c7086",fontFamily:"DM Mono,monospace",fontSize:12,marginLeft:10}}>{a.inactive} of {a.installed} tablets inactive ({formatDate(a.date)})</span>
+              </div>
+              <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22}}>{a.pct}%</span>
+              <button onClick={()=>acknowledge(`half:${a.id}`)} style={{background:c.btn,border:`1px solid ${c.border}`,borderRadius:6,color:"#cdd6f4",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"5px 12px",whiteSpace:"nowrap"}} onMouseOver={e=>e.target.style.opacity="0.75"} onMouseOut={e=>e.target.style.opacity="1"}>Acknowledge</button>
+            </div>
+          );})}
+        </div>
+      )}
+      {visibleStreak.length>0&&(
+        <div style={{display:"grid",gap:8}}>
+          <p style={{margin:0,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:12,color:"#f59e0b",textTransform:"uppercase",letterSpacing:".08em"}}>Tablet Inactive 13+ Days</p>
+          {visibleStreak.map(a=>{ const key=`streak:${a.id}:${a.pos}`, c={bg:"#2a1f00",border:"#f59e0b",text:"#fbbf24",badge:"#f59e0b",btn:"#78520a"}; return (
+            <div key={key} style={{background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <span style={{background:c.badge,color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:10,padding:"2px 7px",borderRadius:4,textTransform:"uppercase"}}>Alert</span>
+              <div style={{flex:1,minWidth:160}}>
+                <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13}}>{a.id} - {a.name}</span>
+                <span style={{color:"#6c7086",fontFamily:"DM Mono,monospace",fontSize:12,marginLeft:10}}>Position {a.pos} inactive for {a.days} days (since {formatDate(a.since)})</span>
+              </div>
+              <span style={{color:c.text,fontFamily:"Syne,sans-serif",fontWeight:800,fontSize:22}}>{a.days}d</span>
+              <button onClick={()=>acknowledge(key)} style={{background:c.btn,border:`1px solid ${c.border}`,borderRadius:6,color:"#cdd6f4",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"5px 12px",whiteSpace:"nowrap"}} onMouseOver={e=>e.target.style.opacity="0.75"} onMouseOut={e=>e.target.style.opacity="1"}>Acknowledge</button>
+            </div>
+          );})}
+        </div>
+      )}
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div>
+            <h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#cdd6f4"}}>Latest Report</h2>
+            <p style={{margin:"2px 0 0",fontFamily:"DM Mono,monospace",fontSize:11,color:"#6c7086"}}>{latest?formatDate(latest.date):"No data"} -- {latest?.sites.filter(s=>s.inactive>0).length||0} sites with inactive tablets</p>
+          </div>
+          {(halfAlerts.length>0||streakAlerts.length>0)&&<span style={{background:"#f38ba8",color:"#11111b",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:11,padding:"3px 10px",borderRadius:20}}>{halfAlerts.length+streakAlerts.length} alerts</span>}
+        </div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:"DM Mono,monospace"}}>
+            <thead><tr style={{background:"#181825"}}>
+              <th style={{padding:"8px 16px",textAlign:"left",color:"#6c7086",fontWeight:500}}>Site</th>
+              <th style={{padding:"8px 10px",textAlign:"right",color:"#6c7086",fontWeight:500}}>Installed</th>
+              <th style={{padding:"8px 10px",textAlign:"right",color:"#6c7086",fontWeight:500}}>Inactive</th>
+              <th style={{padding:"8px 10px",textAlign:"right",color:"#6c7086",fontWeight:500}}>%</th>
+              <th style={{padding:"8px 16px",textAlign:"left",color:"#6c7086",fontWeight:500}}>Positions</th>
+            </tr></thead>
+            <tbody>
+              {(latest?.sites||[]).filter(s=>s.inactive>0||s.noData).sort((a,b)=>{if(a.noData&&!b.noData) return 1; if(!a.noData&&b.noData) return -1; return (b.inactive/b.installed)-(a.inactive/a.installed);}).map(site=>{
+                const pct=Math.round(site.inactive/site.installed*100), isHalf=pct>=50, hasStreak=streakAlerts.some(a=>a.id===site.id);
+                return (
+                  <tr key={site.id} style={{borderTop:"1px solid #313244",background:isHalf?"rgba(243,139,168,0.05)":"none"}}>
+                    <td style={{padding:"8px 16px",color:isHalf?"#f38ba8":hasStreak?"#fbbf24":"#cdd6f4",fontWeight:isHalf?700:400}}>{site.id} - {site.name}</td>
+                    <td style={{padding:"8px 10px",textAlign:"right",color:"#6c7086"}}>{site.installed}</td>
+                    <td style={{padding:"8px 10px",textAlign:"right",color:site.noData?"#45475a":isHalf?"#f38ba8":"#cdd6f4",fontWeight:700}}>{site.noData?"--":site.inactive}</td>
+                    <td style={{padding:"8px 10px",textAlign:"right"}}>{site.noData?<span style={{color:"#45475a",fontSize:10}}>--</span>:<span style={{color:isHalf?"#f38ba8":pct>=30?"#f59e0b":"#a6adc8",fontWeight:isHalf?700:400}}>{pct}%</span>}</td>
+                    <td style={{padding:"8px 16px",color:site.noData?"#45475a":"#585b70",fontStyle:site.noData?"italic":"normal"}}>{site.noData?"No data received":site.positions.join(", ")}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #313244"}}><h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#a6adc8"}}>Report History</h2></div>
+        <div style={{overflowX:"auto"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:"DM Mono,monospace"}}>
+            <thead><tr style={{background:"#181825"}}>
+              <th style={{padding:"8px 16px",textAlign:"left",color:"#6c7086",fontWeight:500}}>Date</th>
+              <th style={{padding:"8px 10px",textAlign:"right",color:"#6c7086",fontWeight:500}}>Issues / OK (Total)</th>
+              <th style={{padding:"8px 10px",textAlign:"right",color:"#6c7086",fontWeight:500}}>Inactive / Active (Total)</th>
+              <th style={{padding:"8px 16px",textAlign:"left",color:"#6c7086",fontWeight:500}}>Worst site</th>
+            </tr></thead>
+            <tbody>
+              {sorted.map(r=>{
+                const affected=r.sites.filter(s=>s.inactive>0);
+                const clean=(r.totalSites||r.sites.length)-affected.length;
+                const totalInactive=r.sites.filter(s=>!s.noData).reduce((sum,s)=>sum+s.inactive,0);
+                const ti=r.totalInstalled||0;
+                const worst=[...affected].sort((a,b)=>(b.inactive/b.installed)-(a.inactive/a.installed))[0];
+                const worstPct=worst?Math.round(worst.inactive/worst.installed*100):0;
+                return (
+                  <tr key={r.date} style={{borderTop:"1px solid #313244"}}>
+                    <td style={{padding:"8px 16px",color:"#6c7086",whiteSpace:"nowrap"}}>{formatDate(r.date)}</td>
+                    <td style={{padding:"8px 10px",textAlign:"right"}}>
+                      <span style={{color:"#f38ba8",fontWeight:700}}>{affected.length}</span>
+                      <span style={{color:"#45475a"}}> / </span>
+                      <span style={{color:"#a6e3a1"}}>{clean}</span>
+                      <span style={{color:"#45475a",fontSize:10}}> ({r.totalSites||r.sites.length})</span>
+                    </td>
+                    <td style={{padding:"8px 10px",textAlign:"right"}}>
+                      <span style={{color:"#f38ba8",fontWeight:700}}>{totalInactive}</span>
+                      <span style={{color:"#45475a"}}> / </span>
+                      <span style={{color:"#a6e3a1"}}>{ti-totalInactive}</span>
+                      <span style={{color:"#45475a",fontSize:10}}> ({ti})</span>
+                    </td>
+                    <td style={{padding:"8px 16px",color:worstPct>=50?"#f38ba8":"#a6adc8"}}>{worst?`${worst.id} - ${worst.name} (${worstPct}%)`:"-"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Log Tab ───────────────────────────────────────────────────────────────────
+function LogTab({ entries }) {
+  const sorted=[...entries].sort((a,b)=>b.date.localeCompare(a.date));
+  return (
+    <div style={{background:"#1e1e2e",border:"1px solid #313244",borderRadius:12,overflow:"hidden"}}>
+      <div style={{padding:"14px 20px",borderBottom:"1px solid #313244"}}><h2 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:15,fontWeight:700,color:"#a6adc8"}}>All Data ({entries.length} entries)</h2></div>
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,fontFamily:"DM Mono,monospace"}}>
+          <thead><tr style={{background:"#181825"}}>
+            {["Date","Out","In","To Send","To Return","Call Logs","Engineer","Not Sent","Needs Return"].map(h=>(
+              <th key={h} style={{padding:"8px 10px",textAlign:"right",color:"#6c7086",fontWeight:500,whiteSpace:"nowrap"}}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {sorted.map(e=>(
+              <tr key={e.date} style={{borderTop:"1px solid #313244"}}>
+                <td style={{padding:"7px 10px",color:"#6c7086",whiteSpace:"nowrap"}}>{formatDate(e.date)}</td>
+                {[e.bookedOutToday,e.bookedInToday,e.itemsToBeSent,e.itemsToBeReturned,e.callLogsTotal,e.engineerVisits,e.notSent,e.needsReturning].map((v,i)=>(
+                  <td key={i} style={{padding:"7px 10px",textAlign:"right",color:v==null?"#45475a":"#cdd6f4"}}>{v??"-"}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Root App ──────────────────────────────────────────────────────────────────
+function App() {
+  const [tab,setTab]=useState("chart");
+  const [data,setData]=useState({stats:[],disconnects:[],dbcorrupt:[],fraud:[],gtab:[]});
+  const [loading,setLoading]=useState(true);
+  const [lastUpdated,setLastUpdated]=useState(null);
+  const [error,setError]=useState(null);
+
+  const loadAll=useCallback(async()=>{
+    try {
+      const [stats,disconnects,dbcorrupt,fraud,gtab]=await Promise.all([
+        loadData('stats.json'),loadData('disconnects.json'),loadData('dbcorrupt.json'),loadData('fraud.json'),loadData('gtab.json')
+      ]);
+      setData({stats,disconnects,dbcorrupt,fraud,gtab});
+      setLastUpdated(new Date());
+      setError(null);
+    } catch(e) { setError(e.message); }
+    setLoading(false);
+  },[]);
+
+  useEffect(()=>{ loadAll(); const id=setInterval(loadAll,5*60*1000); return ()=>clearInterval(id); },[loadAll]);
+
+  const today=new Date().toISOString().slice(0,10);
+  const activeAlerts=detectAlerts(data.stats);
+  const _discAcked=(()=>{ try { const s=JSON.parse(localStorage.getItem("disconnect-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } })();
+  const streaks=getDisconnectStreaks(data.disconnects);
+  const latestDisc=[...data.disconnects].sort((a,b)=>b.date.localeCompare(a.date))[0];
+  const discAlerts=Object.entries(streaks).filter(([id,s])=>s.streak>=3&&s.lastDate===latestDisc?.date&&!_discAcked[id]).length;
+  const _dbAcked=(()=>{ try { const s=JSON.parse(localStorage.getItem("dbcorrupt-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } })();
+  const dbAlerts=Object.entries(getDbCorruptionCounts(data.dbcorrupt,today)).filter(([site,v])=>v.count>3&&!_dbAcked[site]).length;
+  const _fraudAcked=(()=>{ try { const s=JSON.parse(localStorage.getItem("fraud-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } })();
+  const fraudAlertCount=Object.keys(getFraudAlerts(data.fraud)).filter(site=>!_fraudAcked[site]).length;
+  const gtabRes=getGtabAlerts(data.gtab);
+  const _gtabAcked=(()=>{ try { const s=JSON.parse(localStorage.getItem("gtab-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } })();
+  const gtabAlertCount=gtabRes.halfAlerts.filter(a=>!_gtabAcked[`half:${a.id}`]).length+gtabRes.streakAlerts.filter(a=>!_gtabAcked[`streak:${a.id}:${a.pos}`]).length;
+  const _statsAcked=(()=>{ try { const s=JSON.parse(localStorage.getItem("alert-acks")||"{}"); return Object.fromEntries(Object.entries(s).filter(([,d])=>d===today)); } catch { return {}; } })();
+  const statsAlertCount=activeAlerts.filter(a=>_statsAcked[a.id]!==today).length;
+
+  const tabs=[
+    ["chart","Charts",statsAlertCount],
+    ["disconnects","Disconnects",discAlerts],
+    ["dbcorrupt","DB Corrupt",dbAlerts],
+    ["fraud","Fraud",fraudAlertCount],
+    ["gtab","GTab",gtabAlertCount],
+    ["log","Log",0],
+  ];
+
+  if (loading) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",flexDirection:"column",gap:16}}>
+      <div style={{display:"flex",gap:6}}>{[0,1,2].map(i=><div key={i} style={{width:10,height:10,borderRadius:"50%",background:"#cba6f7",animation:"pulse 1.2s ease-in-out infinite",animationDelay:`${i*.2}s`}}/>)}</div>
+      <p style={{fontFamily:"Syne,sans-serif",color:"#6c7086",fontSize:14}}>Loading dashboard...</p>
+    </div>
+  );
+
+  if (error) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",flexDirection:"column",gap:12}}>
+      <p style={{fontFamily:"Syne,sans-serif",color:"#f38ba8",fontSize:16}}>Failed to load data</p>
+      <p style={{fontFamily:"DM Mono,monospace",color:"#6c7086",fontSize:12}}>{error}</p>
+      <button onClick={loadAll} style={{background:"#313244",border:"1px solid #45475a",borderRadius:8,color:"#cdd6f4",padding:"10px 20px",fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:13}}>Retry</button>
+    </div>
+  );
+
+  return (
+    <div style={{maxWidth:1100,margin:"0 auto",padding:"24px 16px"}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,flexWrap:"wrap",gap:12}}>
+        <div>
+          <h1 style={{margin:0,fontFamily:"Syne,sans-serif",fontSize:22,fontWeight:800,color:"#cdd6f4",letterSpacing:"-.02em"}}>Leisure Electronics</h1>
+          <p style={{margin:"3px 0 0",fontFamily:"DM Mono,monospace",fontSize:11,color:"#6c7086"}}>
+            {data.stats.length} days of data
+            {lastUpdated&&<> · refreshed {lastUpdated.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}</>}
+            <button onClick={loadAll} style={{marginLeft:8,background:"none",border:"none",color:"#6c7086",fontSize:11,fontFamily:"DM Mono,monospace",cursor:"pointer",textDecoration:"underline"}}>refresh</button>
+          </p>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {tabs.map(([t,label,alertCount])=>{
+            const isActive=tab===t, hasAlert=alertCount>0;
+            return (
+              <button key={t} className="tb" onClick={()=>setTab(t)} style={{background:isActive?"#313244":"none",borderColor:isActive?"#45475a":hasAlert?"#f59e0b":"#313244",color:isActive?"#cdd6f4":hasAlert?"#fbbf24":"#6c7086",boxShadow:hasAlert&&!isActive?"0 0 8px 1px rgba(245,158,11,0.35)":"none",position:"relative"}}>
+                {label}
+                {hasAlert&&<span style={{marginLeft:5,background:"#f59e0b",color:"#11111b",borderRadius:10,fontSize:10,fontWeight:700,padding:"1px 5px",verticalAlign:"middle"}}>{alertCount}</span>}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {/* Tab content */}
+      <div>
+        {tab==="chart"&&<ChartsTab entries={data.stats}/>}
+        {tab==="disconnects"&&<DisconnectTab reports={data.disconnects}/>}
+        {tab==="dbcorrupt"&&<DbCorruptionTab emails={data.dbcorrupt}/>}
+        {tab==="fraud"&&<FraudTab emails={data.fraud}/>}
+        {tab==="gtab"&&<GtabTab reports={data.gtab}/>}
+        {tab==="log"&&<LogTab entries={data.stats}/>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
