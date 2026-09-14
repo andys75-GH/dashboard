@@ -133,7 +133,7 @@ function critBanner(title, detail, count, onAck) {
 
 //    Data loading                                                            
 async function loadAll() {
-  const files = ['stats','disconnects','dbcorrupt','fraud','Gtab'];
+  const files = ['stats','disconnects','dbcorrupt','fraud','gtab'];
   const results = await Promise.all(files.map(f =>
     fetch(`data/${f}.json?_=${Date.now()}`).then(r => {
       if (!r.ok) throw new Error(`Failed: ${f}.json`);
@@ -197,7 +197,7 @@ function getFraudAlerts(emails) {
   return triggered;
 }
 
-function getGtabAlerts(reports) {
+function getgtabAlerts(reports) {
   const sorted=[...reports].sort((a,b)=>a.date.localeCompare(b.date));
   const latest=sorted[sorted.length-1];
   const halfAlerts=[], streakAlerts=[], posDays={}, dates=sorted.map(r=>r.date);
