@@ -17,7 +17,7 @@
         "name": "Edmonton F",
         "installed": 50,
         "inactive": 0,
-        "positions": [],
+        "positions": [,
         "noData": true
       },
       {
@@ -25,7 +25,7 @@
         "name": "Wallasey",
         "installed": 20,
         "inactive": 0,
-        "positions": [],
+        "positions": [,
         "noData": true
       },
       {
@@ -33,7 +33,7 @@
         "name": "Cheltenham",
         "installed": 30,
         "inactive": 0,
-        "positions": [],
+        "positions": [,
         "noData": true
       },
       {
@@ -41,7 +41,7 @@
         "name": "Cheltenham",
         "installed": 30,
         "inactive": 0,
-        "positions": [],
+        "positions": [,
         "noData": true
       },
       {
@@ -49,7 +49,7 @@
         "name": "York",
         "installed": 45,
         "inactive": 0,
-        "positions": [],
+        "positions": [,
         "noData": true
       },
       {
@@ -57,7 +57,7 @@
         "name": "Cheltenham",
         "installed": 30,
         "inactive": 0,
-        "positions": [],
+        "positions": [,
         "noData": true
       },
       {
@@ -65,10 +65,10 @@
         "name": "York",
         "installed": 45,
         "inactive": 0,
-        "positions": [],
+        "positions": [,
         "noData": true
       }
-    ]
+    
   },
   {
     "date": "2026-08-21",
@@ -93,7 +93,7 @@
         "name": "Torquay G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-22",
@@ -118,7 +118,7 @@
         "name": "Torquay G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-23",
@@ -143,7 +143,7 @@
         "name": "Consett B",
         "flag": "CLOSED_SUNDAYS"
       }
-    ]
+    
   },
   {
     "date": "2026-08-24",
@@ -153,7 +153,7 @@
         "name": "N Finchley G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-25",
@@ -168,7 +168,7 @@
         "name": "Carshalton G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-26",
@@ -183,7 +183,7 @@
         "name": "Preston G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-27",
@@ -213,7 +213,7 @@
         "name": "Kettering G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-28",
@@ -228,7 +228,7 @@
         "name": "Kettering G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-29",
@@ -243,7 +243,7 @@
         "name": "Burnt Oak G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-08-30",
@@ -268,7 +268,7 @@
         "name": "Consett B",
         "flag": "CLOSED_SUNDAYS"
       }
-    ]
+    
   },
   {
     "date": "2026-09-02",
@@ -283,7 +283,7 @@
         "name": "Wisbech G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-09-03",
@@ -298,7 +298,7 @@
         "name": "Torquay G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-09-04",
@@ -323,7 +323,7 @@
         "name": "Lough G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-09-05",
@@ -348,7 +348,7 @@
         "name": "Burnt Oak G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-09-06",
@@ -378,7 +378,7 @@
         "name": "Gateshead B",
         "flag": "CLOSED_SUNDAYS"
       }
-    ]
+    
   },
   {
     "date": "2026-09-07",
@@ -393,7 +393,7 @@
         "name": "Peterborough G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-09-08",
@@ -413,7 +413,7 @@
         "name": "Streatham G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-09-09",
@@ -423,7 +423,7 @@
         "name": "Leeds Hareh G",
         "flag": null
       }
-    ]
+    
   },
   {
     "date": "2026-09-10",
@@ -458,11 +458,12 @@
         "name": "Sutton G",
         "flag": null
       }
-    ]
+    
   },
-  {"date":"2026-09-11","sites":[{"id":"308","name":"Bishop Auc","flag":"CLOSED_SUNDAYS"},{"id":"471","name":"Watford G","flag":null},{"id":"639","name":"Burnt Oak G","flag":null}]}
-,{"date":"2026-09-12","sites":[{"id":"540","name":"Northampton G","flag":null},{"id":"626","name":"Basingstoke G","flag":null}]}
-,{"date":"2026-09-13","sites":[{"id":"240","name":"Aberdeen B","flag":null},{"id":"261","name":"Brid Regal B","flag":"CHECK"},{"id":"308","name":"Bishop Auc","flag":"CLOSED_SUNDAYS"},{"id":"305","name":"Chester Le St B","flag":"CLOSED_SUNDAYS"},{"id":"302","name":"Consett B","flag":"CLOSED_SUNDAYS"}]}
-,{"date":"2026-09-14","sites":[{"id":"674","name":"Grantham G","flag":null}]}
-,{"date":"2026-09-15","sites":[{"id":"231","name":"Tulse Hill B"},{"id":"690","name":"Dover G"},{"id":"169","name":"Salford G"}]}
-,{"date":"2026-09-16","sites":[{"id":"690","name":"Dover G"},{"id":"129","name":"Hounslow G"},{"id":"152","name":"Lewisham G"}]}]
+  {"date":"2026-09-11","sites":[{"id":"308","name":"Bishop Auc","flag":"CLOSED_SUNDAYS"},{"id":"471","name":"Watford G","flag":null},{"id":"639","name":"Burnt Oak G","flag":null}}
+,{"date":"2026-09-12","sites":[{"id":"540","name":"Northampton G","flag":null},{"id":"626","name":"Basingstoke G","flag":null}}
+,{"date":"2026-09-13","sites":[{"id":"240","name":"Aberdeen B","flag":null},{"id":"261","name":"Brid Regal B","flag":"CHECK"},{"id":"308","name":"Bishop Auc","flag":"CLOSED_SUNDAYS"},{"id":"305","name":"Chester Le St B","flag":"CLOSED_SUNDAYS"},{"id":"302","name":"Consett B","flag":"CLOSED_SUNDAYS"}}
+,{"date":"2026-09-14","sites":[{"id":"674","name":"Grantham G","flag":null}}
+,{"date":"2026-09-15","sites":[{"id":"231","name":"Tulse Hill B"},{"id":"690","name":"Dover G"},{"id":"169","name":"Salford G"}}
+,{"date":"2026-09-16","sites":[{"id":"690","name":"Dover G"},{"id":"129","name":"Hounslow G"},{"id":"152","name":"Lewisham G"}}
+,{"date":"2026-09-17","sites":[{"id":"690","name":"Dover G"}]}]
