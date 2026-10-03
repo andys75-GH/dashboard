@@ -609,68 +609,105 @@ function buildFraudTab(emails) {
 }
 
 //    GTab Tab                                                                
+// Tardis files hold one entry per brand per day - merge into one report per day, using the site name as its ID
+function tardisToReports(tardisReports) {
+  const byDate = {};
+  for (const r of (tardisReports || [])) {
+    const d = byDate[r.date] || (byDate[r.date] = { date: r.date, sites: [] });
+    for (const s of (r.sites || [])) d.sites.push({ ...s, id: s.id || s.name, brand: s.brand || r.brand || '' });
+  }
+  return Object.values(byDate).map(r => ({ ...r, totalSites: r.sites.length, totalInstalled: r.sites.filter(s => !s.noData).reduce((t, s) => t + (s.installed || 0), 0) }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+const GTAB_BRANDS = [
+  { key: 'admiral', label: 'Admiral', ackKey: 'gtab-acks',
+    totals: r => ({ sites: 266, tablets: 9228 }) },
+  { key: 'merkur1', label: 'Merkur1', ackKey: 'gtab-merkur1-acks',
+    totals: r => ({ sites: r.totalSites || r.sites.length, tablets: r.totalInstalled || 0 }) },
+  { key: 'tardis', label: 'Tardis', ackKey: 'gtab-tardis-acks', showBrand: true, siteLabel: s => s.name,
+    totals: r => ({ sites: r.totalSites, tablets: r.totalInstalled }) },
+];
+const BRAND_COLOURS = { 'Moto': '#f97316', 'Welcome Break': '#6366f1', 'Extra': '#14b8a6' };
+
+function countGtabAlerts(brandReports, ackKey) {
+  const { halfAlerts, streakAlerts } = getGtabAlerts(brandReports);
+  return halfAlerts.filter(a => !isAcked(ackKey, `half:${a.id}`, a.date)).length
+       + streakAlerts.filter(a => !isAcked(ackKey, `streak:${a.id}:${a.pos}`, a.lastDate)).length;
+}
+
 function buildGtabTab(reports, merkur1Reports, tardisReports) {
-  tardisReports = tardisReports || [];
   const container=document.getElementById('tab-gtab');
   if(!container) return;
   container.innerHTML='';
-  merkur1Reports = merkur1Reports || [];
+  const data = { admiral: reports || [], merkur1: merkur1Reports || [], tardis: tardisToReports(tardisReports) };
+  const rebuild = () => { buildGtabTab(reports, merkur1Reports, tardisReports); buildTabs(computeAlertCounts(window._data)); };
 
-  // Sub-tab buttons
   const subTabBar=el('div',{style:{display:'flex',gap:'6px',marginBottom:'16px',flexWrap:'wrap'}});
   const contentArea=el('div');
-  let activeSubTab='admiral';
 
-  function renderAdmiralContent(){
+  function renderBrand(cfg){
     contentArea.innerHTML='';
-    subTabBar.querySelectorAll('.tb').forEach(b=>b.classList.toggle('active',b.dataset.brand==='admiral'));
-    const {halfAlerts,streakAlerts,latest}=getGtabAlerts(reports), acked=getAcked('gtab-acks');
-    const visibleHalf=halfAlerts.filter(a=>!isAcked('gtab-acks',`half:${a.id}`,a.date));
-    const visibleStreak=streakAlerts.filter(a=>!isAcked('gtab-acks',`streak:${a.id}:${a.pos}`,a.lastDate));
-    visibleHalf.forEach(a=>{ const banner=critBanner(`${a.id} - ${a.name}`,`${a.inactive} of ${a.installed} tablets inactive (${fmt(a.date)})`,`${a.pct}%`,()=>{setAcked('gtab-acks',`half:${a.id}`,a.date);buildGtabTab(reports,merkur1Reports);buildTabs(computeAlertCounts(window._data));}); contentArea.appendChild(banner); });
-    visibleStreak.forEach(a=>{ const key=`streak:${a.id}:${a.pos}`, banner=warnBanner(`${a.id} - ${a.name}`,`Position ${a.pos} inactive ${a.days} of last ${a.window||14} days (since ${fmt(a.since)})`,`${a.days}d`,()=>{setAcked('gtab-acks',key,a.lastDate);buildGtabTab(reports,merkur1Reports);buildTabs(computeAlertCounts(window._data));}); contentArea.appendChild(banner); });
+    subTabBar.querySelectorAll('.tb').forEach(b=>b.classList.toggle('active',b.dataset.brand===cfg.key));
+    const brandReports = data[cfg.key];
+    if(!brandReports.length){ contentArea.appendChild(el('p',{style:{color:'#888',padding:'20px',fontFamily:"'DM Mono',monospace"}},`No ${cfg.label} data yet.`)); return; }
+    const label = cfg.siteLabel || (s => `${s.id} - ${s.name}`);
+    const {halfAlerts,streakAlerts,latest}=getGtabAlerts(brandReports);
+
+    // Alert banners
+    halfAlerts.filter(a=>!isAcked(cfg.ackKey,`half:${a.id}`,a.date)).forEach(a=>{
+      contentArea.appendChild(critBanner(label(a),`${a.inactive} of ${a.installed} tablets inactive (${fmt(latest.date)})`,`${a.pct}%`,()=>{setAcked(cfg.ackKey,`half:${a.id}`,a.date);rebuild();}));
+    });
+    streakAlerts.filter(a=>!isAcked(cfg.ackKey,`streak:${a.id}:${a.pos}`,a.lastDate)).forEach(a=>{
+      contentArea.appendChild(warnBanner(label(a),`Position ${a.pos} inactive ${a.days} of last ${a.window||14} days (since ${fmt(a.since)})`,`${a.days}d`,()=>{setAcked(cfg.ackKey,`streak:${a.id}:${a.pos}`,a.lastDate);rebuild();}));
+    });
+
+    // Latest report - every site, click a row for its position history
     const card=el('div',{className:'card'});
-    card.appendChild(el('div',{className:'card-header'},el('div',null,el('h2',{className:'card-title'},'Admiral Latest Report'),el('p',{className:'card-sub'},latest?`${fmt(latest.date)} - ${latest.sites.filter(s=>s.inactive>0).length} sites with inactive tablets`:'No data'))));
+    card.appendChild(el('div',{className:'card-header'},el('div',null,el('h2',{className:'card-title'},`${cfg.label} Latest Report`),el('p',{className:'card-sub'},latest?`${fmt(latest.date)} - ${latest.sites.filter(s=>s.inactive>0).length} sites with inactive tablets`:'No data'))));
     if(latest){
-      const tbl=el('table',null,el('thead',null,el('tr',null,...['Site','Installed','Inactive','%','Positions',''].map((h,i)=>el('th',{style:{textAlign:i>0&&i<4?'right':'left'}},h)))));
+      const heads=[...(cfg.showBrand?['Brand']:[]),'Site','Installed','Inactive','%','Positions',''];
+      const off=cfg.showBrand?1:0;
+      const tbl=el('table',null,el('thead',null,el('tr',null,...heads.map((h,i)=>el('th',{style:{textAlign:i>off&&i<off+4?'right':'left'}},h)))));
       const tbody=el('tbody');
       [...latest.sites].sort((a,b)=>{if(a.noData&&!b.noData)return 1;if(!a.noData&&b.noData)return -1;if(b.inactive!==a.inactive)return b.inactive-a.inactive;return a.name.localeCompare(b.name);}).forEach(site=>{
         const pct=site.installed>0?Math.round(site.inactive/site.installed*100):0, isHalf=pct>=50, hasStreak=streakAlerts.some(a=>a.id===site.id);
-        const tr=el('tr',{style:{background:isHalf?'rgba(211,47,47,0.05)':site.inactive===0&&!site.noData?'none':'none',cursor:'pointer'},
-          onClick:()=>showAdmiralSiteDetail(site.id, site.name, reports, contentArea, card)},
-          el('td',{style:{color:isHalf?'#d32f2f':hasStreak?'#f57f17':site.inactive>0?'#e65100':'#333',fontWeight:isHalf||site.inactive>0?'600':'400'}},`${site.id} - ${site.name}`),
+        tbody.appendChild(el('tr',{style:{background:isHalf?'rgba(211,47,47,0.05)':'none',cursor:'pointer'},onClick:()=>showSiteDetail(site.id,label(site),brandReports,contentArea,card)},
+          ...(cfg.showBrand?[el('td',{style:{color:BRAND_COLOURS[site.brand]||'#666',fontSize:'11px',fontWeight:'600',whiteSpace:'nowrap'}},site.brand||'')]:[]),
+          el('td',{style:{color:isHalf?'#d32f2f':hasStreak?'#f57f17':site.inactive>0?'#e65100':'#333',fontWeight:isHalf||site.inactive>0?'600':'400'}},label(site)),
           el('td',{style:{textAlign:'right',color:'#888'}},String(site.installed)),
           el('td',{style:{textAlign:'right',color:site.noData?'#aaa':isHalf?'#d32f2f':site.inactive>0?'#e65100':'#2e7d32',fontWeight:'700'}},site.noData?'--':String(site.inactive)),
           el('td',{style:{textAlign:'right',color:isHalf?'#d32f2f':pct>=30?'#f57f17':site.inactive>0?'#e65100':'#2e7d32'}},site.noData?'--':`${pct}%`),
           el('td',{style:{color:site.noData?'#aaa':'#666',fontStyle:site.noData?'italic':'normal'}},site.noData?'No data received':(site.positions||[]).join(', ')),
           el('td',{style:{color:'#1976d2',fontSize:'11px',whiteSpace:'nowrap'}},'view history')
-        );
-        tbody.appendChild(tr);
+        ));
       });
       tbl.appendChild(tbody); card.appendChild(el('div',{style:{overflowX:'auto'}},tbl));
     }
     contentArea.appendChild(card);
+
+    // History
     const hist=el('div',{className:'card',style:{marginTop:'16px'}});
-    hist.appendChild(el('div',{className:'card-header'},el('h2',{className:'card-title',style:{color:'#555'}},'Admiral History')));
+    hist.appendChild(el('div',{className:'card-header'},el('h2',{className:'card-title',style:{color:'#555'}},`${cfg.label} History`)));
     const tbl2=el('table',null,el('thead',null,el('tr',null,...['Date','Issues / OK (Total)','Inactive / Active (Total)','Worst Site'].map(h=>el('th',null,h)))));
     const tbody2=el('tbody');
-    [...reports].sort((a,b)=>b.date.localeCompare(a.date)).forEach(r=>{
-      const affected=r.sites.filter(s=>s.inactive>0);
-      const ADMIRAL_SITES=266, ADMIRAL_TABLETS=9228;
-      const clean=ADMIRAL_SITES-affected.length;
-      const totalInactive=r.sites.filter(s=>!s.noData).reduce((sum,s)=>sum+s.inactive,0);
-      const ti=ADMIRAL_TABLETS;
+    [...brandReports].sort((a,b)=>b.date.localeCompare(a.date)).forEach(r=>{
+      const affected=r.sites.filter(s=>s.inactive>0&&!s.noData);
+      const t=cfg.totals(r);
+      const totalInactive=affected.reduce((sum,s)=>sum+s.inactive,0);
       const worst=[...affected].sort((a,b)=>(b.inactive/b.installed)-(a.inactive/a.installed))[0];
       const worstPct=worst?Math.round(worst.inactive/worst.installed*100):0;
-      const issCell=el('td');issCell.appendChild(el('span',{style:{color:'#d32f2f',fontWeight:'700'}},String(affected.length)));issCell.appendChild(document.createTextNode(' / '));issCell.appendChild(el('span',{style:{color:'#2e7d32'}},String(clean)));issCell.appendChild(el('span',{style:{color:'#aaa',fontSize:'10px'}},` (${ADMIRAL_SITES})`));
-      const tabCell=el('td');tabCell.appendChild(el('span',{style:{color:'#d32f2f',fontWeight:'700'}},String(totalInactive)));tabCell.appendChild(document.createTextNode(' / '));tabCell.appendChild(el('span',{style:{color:'#2e7d32'}},String(ti-totalInactive)));tabCell.appendChild(el('span',{style:{color:'#aaa',fontSize:'10px'}},` (${ti})`));
-      tbody2.appendChild(el('tr',null,el('td',{style:{color:'#888',whiteSpace:'nowrap'}},fmt(r.date)),issCell,tabCell,el('td',{style:{color:worstPct>=50?'#f38ba8':'#a6adc8'}},worst?`${worst.id} - ${worst.name} (${worstPct}%)`:'-')));
+      const pair=(bad,good,total)=>{const c=el('td');c.appendChild(el('span',{style:{color:'#d32f2f',fontWeight:'700'}},String(bad)));c.appendChild(document.createTextNode(' / '));c.appendChild(el('span',{style:{color:'#2e7d32'}},String(good)));c.appendChild(el('span',{style:{color:'#aaa',fontSize:'10px'}},` (${total})`));return c;};
+      tbody2.appendChild(el('tr',null,
+        el('td',{style:{color:'#888',whiteSpace:'nowrap'}},fmt(r.date)),
+        pair(affected.length,t.sites-affected.length,t.sites),
+        pair(totalInactive,t.tablets-totalInactive,t.tablets),
+        el('td',{style:{color:worstPct>=50?'#d32f2f':'#555'}},worst?`${label(worst)} (${worstPct}%)`:'-')));
     });
     tbl2.appendChild(tbody2); hist.appendChild(el('div',{style:{overflowX:'auto'}},tbl2)); contentArea.appendChild(hist);
   }
 
-
-  function showAdmiralSiteDetail(siteId, siteName, allReports, container, mainCard) {
+  function showSiteDetail(siteId, siteName, allReports, container, mainCard) {
     // Remove any existing detail panel
     const existing = container.querySelector('.site-detail-panel');
     if(existing) { existing.remove(); if(existing.dataset.siteId===siteId) return; }
@@ -681,7 +718,7 @@ function buildGtabTab(reports, merkur1Reports, tardisReports) {
     const panel=el('div',{className:'card site-detail-panel','data-site-id':siteId,style:{marginTop:'16px',border:'2px solid #1976d2'}});
     panel.appendChild(el('div',{className:'card-header',style:{background:'#e3f2fd'}},
       el('div',null,
-        el('h2',{className:'card-title',style:{color:'#1976d2'}},`${siteId} - ${siteName}  Position History`),
+        el('h2',{className:'card-title',style:{color:'#1976d2'}},`${siteName}  Position History`),
         el('p',{className:'card-sub'},`${dates.length} days of data`)
       ),
       el('button',{style:{background:'none',border:'1px solid #1976d2',borderRadius:'6px',color:'#1976d2',padding:'4px 12px',cursor:'pointer',fontSize:'12px',fontWeight:'600'},
@@ -739,138 +776,18 @@ function buildGtabTab(reports, merkur1Reports, tardisReports) {
     panel.scrollIntoView({behavior:'smooth',block:'nearest'});
   }
 
-  function renderMerkur1Content(){
-    contentArea.innerHTML='';
-    subTabBar.querySelectorAll('.tb').forEach(b=>b.classList.toggle('active',b.dataset.brand==='merkur1'));
-    const {halfAlerts,streakAlerts,latest}=getGtabAlerts(merkur1Reports);
-    const visibleHalf=halfAlerts.filter(a=>!isAcked('gtab-merkur1-acks',`half:${a.id}`,a.date));
-    const visibleStreak=streakAlerts.filter(a=>!isAcked('gtab-merkur1-acks',`streak:${a.id}:${a.pos}`,a.lastDate));
-    visibleHalf.forEach(a=>{ const banner=critBanner(`${a.id} - ${a.name}`,`${a.inactive} of ${a.installed} tablets inactive (${fmt(a.date)})`,`${a.pct}%`,()=>{setAcked('gtab-merkur1-acks',`half:${a.id}`,a.date);buildGtabTab(reports,merkur1Reports);buildTabs(computeAlertCounts(window._data));}); contentArea.appendChild(banner); });
-    visibleStreak.forEach(a=>{ const key=`streak:${a.id}:${a.pos}`, banner=warnBanner(`${a.id} - ${a.name}`,`Position ${a.pos} inactive ${a.days} of last ${a.window||14} days (since ${fmt(a.since)})`,`${a.days}d`,()=>{setAcked('gtab-merkur1-acks',key,a.lastDate);buildGtabTab(reports,merkur1Reports);buildTabs(computeAlertCounts(window._data));}); contentArea.appendChild(banner); });
-    if(!merkur1Reports.length){ contentArea.appendChild(el('p',{style:{color:'#888',padding:'20px',fontFamily:"'DM Mono',monospace"}},'No Merkur1 data yet.')); }
-    else {
-      const card=el('div',{className:'card'});
-      card.appendChild(el('div',{className:'card-header'},el('div',null,el('h2',{className:'card-title'},'Merkur1 Latest Report'),el('p',{className:'card-sub'},latest?`${fmt(latest.date)} - ${latest.sites.filter(s=>s.inactive>0).length} sites with inactive tablets`:'No data'))));
-      if(latest){
-        const tbl=el('table',null,el('thead',null,el('tr',null,...['Site','Installed','Inactive','%','Positions',''].map((h,i)=>el('th',{style:{textAlign:i>0&&i<4?'right':'left'}},h)))));
-        const tbody=el('tbody');
-        [...latest.sites].sort((a,b)=>{if(a.noData&&!b.noData)return 1;if(!a.noData&&b.noData)return -1;if(b.inactive!==a.inactive)return b.inactive-a.inactive;return a.name.localeCompare(b.name);}).forEach(site=>{
-          const pct=site.installed>0?Math.round(site.inactive/site.installed*100):0, isHalf=pct>=50;
-          tbody.appendChild(el('tr',null,
-            el('td',{style:{color:isHalf?'#f38ba8':'#cdd6f4',fontWeight:isHalf?'700':'400'}},`${site.id} - ${site.name}`),
-            el('td',{style:{textAlign:'right',color:'#888'}},String(site.installed)),
-            el('td',{style:{textAlign:'right',color:isHalf?'#f38ba8':'#cdd6f4',fontWeight:'700'}},site.noData?'--':String(site.inactive)),
-            el('td',{style:{textAlign:'right',color:isHalf?'#f38ba8':pct>=30?'#f59e0b':'#a6adc8'}},site.noData?'--':`${pct}%`),
-            el('td',{style:{color:'#666'}},site.noData?'No data received':(site.positions||[]).join(', '))
-          ));
-        });
-        tbl.appendChild(tbody); card.appendChild(el('div',{style:{overflowX:'auto'}},tbl));
-      }
-      contentArea.appendChild(card);
-      const hist=el('div',{className:'card',style:{marginTop:'16px'}});
-      hist.appendChild(el('div',{className:'card-header'},el('h2',{className:'card-title',style:{color:'#555'}},'Merkur1 History')));
-      const tbl2=el('table',null,el('thead',null,el('tr',null,...['Date','Issues / OK (Total)','Inactive / Active (Total)','Worst Site'].map(h=>el('th',null,h)))));
-      const tbody2=el('tbody');
-      [...merkur1Reports].sort((a,b)=>b.date.localeCompare(a.date)).forEach(r=>{
-        const affected=r.sites.filter(s=>s.inactive>0);
-        const clean=(r.totalSites||r.sites.length)-affected.length;
-        const totalInactive=r.sites.filter(s=>!s.noData).reduce((sum,s)=>sum+s.inactive,0);
-        const ti=r.totalInstalled||0;
-        const worst=[...affected].sort((a,b)=>(b.inactive/b.installed)-(a.inactive/a.installed))[0];
-        const worstPct=worst?Math.round(worst.inactive/worst.installed*100):0;
-        const issCell=el('td');issCell.appendChild(el('span',{style:{color:'#d32f2f',fontWeight:'700'}},String(affected.length)));issCell.appendChild(document.createTextNode(' / '));issCell.appendChild(el('span',{style:{color:'#2e7d32'}},String(clean)));issCell.appendChild(el('span',{style:{color:'#aaa',fontSize:'10px'}},` (${r.totalSites||r.sites.length})`));
-        const tabCell=el('td');tabCell.appendChild(el('span',{style:{color:'#d32f2f',fontWeight:'700'}},String(totalInactive)));tabCell.appendChild(document.createTextNode(' / '));tabCell.appendChild(el('span',{style:{color:'#2e7d32'}},String(ti-totalInactive)));tabCell.appendChild(el('span',{style:{color:'#aaa',fontSize:'10px'}},` (${ti})`));
-        tbody2.appendChild(el('tr',null,el('td',{style:{color:'#888',whiteSpace:'nowrap'}},fmt(r.date)),issCell,tabCell,el('td',{style:{color:worstPct>=50?'#f38ba8':'#a6adc8'}},worst?`${worst.id} - ${worst.name} (${worstPct}%)`:'-')));
-      });
-      tbl2.appendChild(tbody2); hist.appendChild(el('div',{style:{overflowX:'auto'}},tbl2)); contentArea.appendChild(hist);
-    }
-  }
 
-  // Brand sub-tab buttons
-  [['admiral','Admiral'],['merkur1','Merkur1'],['tardis','Tardis']].forEach(([brand,label])=>{
-    const b=el('button',{className:'tb'+(brand==='admiral'?' active':''),'data-brand':brand,onClick:()=>{activeSubTab=brand;window._activeGtabSubTab=brand;if(brand==='admiral')renderAdmiralContent();else if(brand==='merkur1')renderMerkur1Content();else renderTardisContent();}},label);
+  GTAB_BRANDS.forEach(cfg=>{
+    const n=data[cfg.key].length?countGtabAlerts(data[cfg.key],cfg.ackKey):0;
+    const b=el('button',{className:'tb','data-brand':cfg.key,onClick:()=>{window._activeGtabSubTab=cfg.key;renderBrand(cfg);}},cfg.label+(n?` (${n})`:''));
     subTabBar.appendChild(b);
   });
   container.appendChild(subTabBar);
   container.appendChild(contentArea);
 
-  function renderTardisContent(){
-    contentArea.innerHTML='';
-    subTabBar.querySelectorAll('.tb').forEach(b=>b.classList.toggle('active',b.dataset.brand==='tardis'));
-    if(!tardisReports.length){ contentArea.appendChild(el('p',{style:{color:'#888',padding:'20px',fontFamily:"'DM Mono',monospace"}},'No Tardis data yet.')); return; }
-    
-    // Get all unique dates and find latest
-    const dates=[...new Set(tardisReports.map(r=>r.date))].sort((a,b)=>b.localeCompare(a));
-    const latestDate=dates[0];
-    const latestEntries=tardisReports.filter(r=>r.date===latestDate);
-    const allLatestSites=latestEntries.flatMap(r=>r.sites);
-    
-    const brandColors={'Moto':'#f97316','Welcome Break':'#6366f1','Extra':'#14b8a6'};
-    
-    const card=el('div',{className:'card'});
-    card.appendChild(el('div',{className:'card-header'},el('div',null,
-      el('h2',{className:'card-title'},'Tardis Latest Report'),
-      el('p',{className:'card-sub'},`${fmt(latestDate)} - ${allLatestSites.filter(s=>s.inactive>0).length} sites with inactive tablets`)
-    )));
-    const tbl=el('table',null,el('thead',null,el('tr',null,...['Brand','Site','Installed','Inactive','%','Positions'].map((h,i)=>el('th',{style:{textAlign:i>1&&i<5?'right':'left'}},h)))));
-    const tbody=el('tbody');
-    [...allLatestSites].filter(s=>s.inactive>0||s.noData).sort((a,b)=>{
-      if(a.noData&&!b.noData)return 1;if(!a.noData&&b.noData)return -1;
-      return(b.inactive/b.installed)-(a.inactive/a.installed);
-    }).forEach(site=>{
-      const pct=site.installed>0?Math.round(site.inactive/site.installed*100):0,isHalf=pct>=50;
-      const brand=site.brand||'';
-      tbody.appendChild(el('tr',null,
-        el('td',{style:{color:brandColors[brand]||'#6c7086',fontSize:'11px',whiteSpace:'nowrap'}},brand),
-        el('td',{style:{color:isHalf?'#f38ba8':'#cdd6f4',fontWeight:isHalf?'700':'400'}},site.name),
-        el('td',{style:{textAlign:'right',color:'#888'}},String(site.installed)),
-        el('td',{style:{textAlign:'right',color:isHalf?'#f38ba8':'#cdd6f4',fontWeight:'700'}},site.noData?'--':String(site.inactive)),
-        el('td',{style:{textAlign:'right',color:isHalf?'#f38ba8':pct>=30?'#f59e0b':'#a6adc8'}},site.noData?'--':`${pct}%`),
-        el('td',{style:{color:'#666'}},site.noData?'No data received':(site.positions||[]).join(', '))
-      ));
-    });
-    tbl.appendChild(tbody);card.appendChild(el('div',{style:{overflowX:'auto'}},tbl));contentArea.appendChild(card);
-    
-    // History by date
-    const hist=el('div',{className:'card',style:{marginTop:'16px'}});
-    hist.appendChild(el('div',{className:'card-header'},el('h2',{className:'card-title',style:{color:'#555'}},'Tardis History')));
-    const tbl2=el('table',null,el('thead',null,el('tr',null,...['Date','Issues / OK (Total)','Inactive / Active (Total)','Worst Site'].map(h=>el('th',null,h)))));
-    const tbody2=el('tbody');
-    dates.forEach(date=>{
-      const entries=tardisReports.filter(r=>r.date===date);
-      const allSites=entries.flatMap(r=>r.sites);
-      const affected=allSites.filter(s=>s.inactive>0&&!s.noData);
-      const totalSites=allSites.length;
-      const clean=totalSites-affected.length;
-      const totalInactive=affected.reduce((sum,s)=>sum+s.inactive,0);
-      const totalInstalled=allSites.filter(s=>!s.noData).reduce((sum,s)=>sum+s.installed,0);
-      const worst=[...affected].sort((a,b)=>(b.inactive/b.installed)-(a.inactive/a.installed))[0];
-      const worstPct=worst?Math.round(worst.inactive/worst.installed*100):0;
-      const issCell=el('td');
-      issCell.appendChild(el('span',{style:{color:'#d32f2f',fontWeight:'700'}},String(affected.length)));
-      issCell.appendChild(document.createTextNode(' / '));
-      issCell.appendChild(el('span',{style:{color:'#2e7d32'}},String(clean)));
-      issCell.appendChild(el('span',{style:{color:'#aaa',fontSize:'10px'}},` (${totalSites})`));
-      const tabCell=el('td');
-      tabCell.appendChild(el('span',{style:{color:'#d32f2f',fontWeight:'700'}},String(totalInactive)));
-      tabCell.appendChild(document.createTextNode(' / '));
-      tabCell.appendChild(el('span',{style:{color:'#2e7d32'}},String(totalInstalled-totalInactive)));
-      tabCell.appendChild(el('span',{style:{color:'#aaa',fontSize:'10px'}},` (${totalInstalled})`));
-      tbody2.appendChild(el('tr',null,
-        el('td',{style:{color:'#888',whiteSpace:'nowrap'}},fmt(date)),
-        issCell,
-        tabCell,
-        el('td',{style:{color:worstPct>=50?'#d32f2f':'#555'}},worst?`${worst.name} (${worstPct}%)`:'-')
-      ));
-    });
-    tbl2.appendChild(tbody2);hist.appendChild(el('div',{style:{overflowX:'auto'}},tbl2));contentArea.appendChild(hist);
-  }
-
   // Remember active sub-tab across rebuilds
-  const savedTab = window._activeGtabSubTab || 'admiral';
-  if(savedTab==='merkur1') renderMerkur1Content();
-  else if(savedTab==='tardis') renderTardisContent();
-  else renderAdmiralContent();
+  const saved=GTAB_BRANDS.find(c=>c.key===window._activeGtabSubTab)||GTAB_BRANDS[0];
+  renderBrand(saved);
 }
 
 //    Alert counts for badges                                                 
@@ -905,11 +822,7 @@ function computeAlertCounts(data) {
   const dbCounts=getDbCounts(data.dbcorrupt);
   const dbAlerts=Object.entries(dbCounts).filter(([site,v])=>v.count>3&&!isAcked('dbcorrupt-acks',site,v.dates.sort().slice(-1)[0])).length;
   const fraudAlerts=Object.entries(getFraudAlerts(data.fraud)).filter(([site,v])=>!isAcked('fraud-acks',site,v.last)).length;
-  const {halfAlerts,streakAlerts}=getGtabAlerts(data.gtab);
-  const gtabAlerts=halfAlerts.filter(a=>!isAcked('gtab-acks',`half:${a.id}`,a.date)).length+streakAlerts.filter(a=>!isAcked('gtab-acks',`streak:${a.id}:${a.pos}`,a.lastDate)).length;
-  const m1Res=getGtabAlerts(data.gtab_merkur1);
-  const m1Alerts=m1Res.halfAlerts.filter(a=>!isAcked('gtab-merkur1-acks',`half:${a.id}`,a.date)).length+m1Res.streakAlerts.filter(a=>!isAcked('gtab-merkur1-acks',`streak:${a.id}:${a.pos}`,a.lastDate)).length;
-  const totalGtabAlerts=gtabAlerts+m1Alerts;
+  const totalGtabAlerts=countGtabAlerts(data.gtab||[],'gtab-acks')+countGtabAlerts(data.gtab_merkur1||[],'gtab-merkur1-acks')+countGtabAlerts(tardisToReports(data.gtab_tardis),'gtab-tardis-acks');
 
   const diskAcked2=getAcked('diskspace-acks');
   const diskAlerts=(data.diskspace||[]).filter(a=>!isAcked('diskspace-acks',a.datetime,a.datetime)).length>0?1:0;
