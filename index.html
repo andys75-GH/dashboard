@@ -175,11 +175,13 @@ function critBanner(title, detail, count, onAck) {
 
 //    Data loading                                                            
 async function loadAll() {
-  const files = ['stats','disconnects','dbcorrupt','fraud','gtab','diskspace','appfigures','gtab_merkur1','gtab_tardis'];
+  const files = ['stats','disconnects','dbcorrupt','fraud','gtab','diskspace','appfigures','gtab_merkur1','gtab_tardis','gtab_groups'];
+  const optional = ['gtab_groups']; // may not exist yet
   const results = [];
   for (const f of files) {
     try {
       const r = await fetch(`data/${f}.json?_=${Date.now()}`);
+      if (!r.ok && optional.includes(f)) { results.push([]); console.warn(`${f}.json not found - skipped`); continue; }
       if (!r.ok) throw new Error(`HTTP ${r.status}: ${f}.json not found`);
       const text = await r.text();
       try {
@@ -197,7 +199,7 @@ async function loadAll() {
       throw new Error(e.message);
     }
   }
-  return { stats: results[0], disconnects: results[1], dbcorrupt: results[2], fraud: results[3], gtab: results[4], diskspace: results[5], appfigures: results[6], gtab_merkur1: results[7], gtab_tardis: results[8] };
+  return { stats: results[0], disconnects: results[1], dbcorrupt: results[2], fraud: results[3], gtab: results[4], diskspace: results[5], appfigures: results[6], gtab_merkur1: results[7], gtab_tardis: results[8], gtab_groups: results[9] };
 }
 
 //    Alert logic                                                             
@@ -276,7 +278,7 @@ function normalizeGtab(reports, name) {
     out.push({...r, sites});
   };
   reports.forEach(add);
-  if (name === 'gtab_tardis') return out; // Tardis has one entry per brand per day - keep them all
+  if (name === 'gtab_tardis' || name === 'gtab_groups') return out; // Tardis has one entry per brand per day - keep them all
   const byDate = {}; out.forEach(r => byDate[r.date] = r);
   return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
 }
@@ -620,13 +622,28 @@ function tardisToReports(tardisReports) {
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// Smaller groups: one file (gtab_groups.json), one entry per group per day, every club listed. [tab label, group name as in the email subject]
+const GTAB_GROUPS = [['Chongie','Chongie'],['Shaws','Shaws'],['Kings','Kings'],['Parkdean','Parkdean'],['J Holland','J Hollands'],['Coral','Coral'],
+  ['Family Leisure','Family Leisure'],['Jesters','Jesters'],['East Kent','East Kent'],['Silvertime','Silvertime'],['Clacton','Clacton']];
+
+function groupToReports(all, group) {
+  const byDate = {};
+  for (const r of (all || [])) if (r.group === group) byDate[r.date] = { ...r, sites: (r.sites || []).map(s => ({ ...s, id: s.id || s.name })) }; // latest entry per day wins
+  return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+const sumTotals = r => ({ sites: r.totalSites || r.sites.length, tablets: r.totalInstalled || r.sites.filter(s => !s.noData).reduce((t, s) => t + (s.installed || 0), 0) });
 const GTAB_BRANDS = [
-  { key: 'admiral', label: 'Admiral', ackKey: 'gtab-acks',
+  { key: 'admiral', label: 'Admiral', ackKey: 'gtab-acks', from: d => d.gtab || [],
     totals: r => ({ sites: 266, tablets: 9228 }) },
-  { key: 'merkur1', label: 'Merkur1', ackKey: 'gtab-merkur1-acks',
+  { key: 'merkur1', label: 'Merkur1', ackKey: 'gtab-merkur1-acks', from: d => d.gtab_merkur1 || [],
     totals: r => ({ sites: r.totalSites || r.sites.length, tablets: r.totalInstalled || 0 }) },
-  { key: 'tardis', label: 'Tardis', ackKey: 'gtab-tardis-acks', showBrand: true, siteLabel: s => s.name,
+  { key: 'tardis', label: 'Tardis', ackKey: 'gtab-tardis-acks', showBrand: true, siteLabel: s => s.name, from: d => tardisToReports(d.gtab_tardis),
     totals: r => ({ sites: r.totalSites, tablets: r.totalInstalled }) },
+  ...GTAB_GROUPS.map(([label, group]) => {
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    return { key: 'grp-' + slug, label, ackKey: `gtab-grp-${slug}-acks`, siteLabel: s => s.name, from: d => groupToReports(d.gtab_groups, group), totals: sumTotals };
+  }),
 ];
 const BRAND_COLOURS = { 'Moto': '#f97316', 'Welcome Break': '#6366f1', 'Extra': '#14b8a6' };
 
@@ -636,12 +653,12 @@ function countGtabAlerts(brandReports, ackKey) {
        + streakAlerts.filter(a => !isAcked(ackKey, `streak:${a.id}:${a.pos}`, a.lastDate)).length;
 }
 
-function buildGtabTab(reports, merkur1Reports, tardisReports) {
+function buildGtabTab(allData) {
   const container=document.getElementById('tab-gtab');
   if(!container) return;
   container.innerHTML='';
-  const data = { admiral: reports || [], merkur1: merkur1Reports || [], tardis: tardisToReports(tardisReports) };
-  const rebuild = () => { buildGtabTab(reports, merkur1Reports, tardisReports); buildTabs(computeAlertCounts(window._data)); };
+  const data = {}; GTAB_BRANDS.forEach(cfg => data[cfg.key] = cfg.from(allData || {}));
+  const rebuild = () => { buildGtabTab(allData); buildTabs(computeAlertCounts(window._data)); };
 
   const subTabBar=el('div',{style:{display:'flex',gap:'6px',marginBottom:'16px',flexWrap:'wrap'}});
   const contentArea=el('div');
@@ -822,7 +839,7 @@ function computeAlertCounts(data) {
   const dbCounts=getDbCounts(data.dbcorrupt);
   const dbAlerts=Object.entries(dbCounts).filter(([site,v])=>v.count>3&&!isAcked('dbcorrupt-acks',site,v.dates.sort().slice(-1)[0])).length;
   const fraudAlerts=Object.entries(getFraudAlerts(data.fraud)).filter(([site,v])=>!isAcked('fraud-acks',site,v.last)).length;
-  const totalGtabAlerts=countGtabAlerts(data.gtab||[],'gtab-acks')+countGtabAlerts(data.gtab_merkur1||[],'gtab-merkur1-acks')+countGtabAlerts(tardisToReports(data.gtab_tardis),'gtab-tardis-acks');
+  const totalGtabAlerts=GTAB_BRANDS.reduce((t,cfg)=>{const r=cfg.from(data);return t+(r.length?countGtabAlerts(r,cfg.ackKey):0);},0);
 
   const diskAcked2=getAcked('diskspace-acks');
   const diskAlerts=(data.diskspace||[]).filter(a=>!isAcked('diskspace-acks',a.datetime,a.datetime)).length>0?1:0;
@@ -1096,7 +1113,7 @@ async function boot() {
   buildDisconnectsTab(data.disconnects);
   buildDbCorruptTab(data.dbcorrupt);
   buildFraudTab(data.fraud);
-  buildGtabTab(data.gtab, data.gtab_merkur1, data.gtab_tardis);
+  buildGtabTab(data);
   buildDiskSpaceTab(data.diskspace);
   buildAppFiguresTab(data.appfigures);
   buildLogTab(data.stats);
@@ -1119,10 +1136,10 @@ async function boot() {
       buildDisconnectsTab(fresh.disconnects);
       buildDbCorruptTab(fresh.dbcorrupt);
       buildFraudTab(fresh.fraud);
-      buildGtabTab(fresh.gtab, fresh.gtab_merkur1, fresh.gtab_tardis);
+      buildGtabTab(fresh);
       buildDiskSpaceTab(fresh.diskspace);
       buildAppFiguresTab(fresh.appfigures);
-      buildGtabTab(fresh.gtab, fresh.gtab_merkur1, fresh.gtab_tardis);
+      buildGtabTab(fresh);
       buildLogTab(fresh.stats);
       buildTabs(computeAlertCounts(fresh));
       document.getElementById('subtitle').textContent=`${fresh.stats.length} days of data   refreshed ${new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`;
