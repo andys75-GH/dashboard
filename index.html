@@ -981,6 +981,8 @@ function buildDiskSpaceTab(alerts) {
 
 
 function buildAppFiguresTab(entries) {
+  // FTD % isn't in the daily report - work it out from FTD / Registered
+  entries=(entries||[]).map(e=>({...e, ftdPct: e.ftdPct!=null ? e.ftdPct : (e.registered>0 && e.ftd!=null ? Math.round(e.ftd/e.registered*1000)/10 : null)}));
   const container=document.getElementById('tab-appfigures');
   if(!container) return;
   container.innerHTML='';
