@@ -178,6 +178,7 @@ async function loadAll() {
   const files = ['stats','disconnects','dbcorrupt','fraud','gtab','diskspace','appfigures','gtab_merkur1','gtab_tardis','gtab_groups'];
   const optional = ['gtab_groups']; // may not exist yet
   const results = [];
+  window._loadErrors = [];
   for (const f of files) {
     try {
       const r = await fetch(`data/${f}.json?_=${Date.now()}`);
@@ -196,7 +197,10 @@ async function loadAll() {
         throw new Error(`JSON error in ${f}.json at position ${pos}: ...${snippet}...`);
       }
     } catch(e) {
-      throw new Error(e.message);
+      // One bad file shouldn't take down the whole dashboard - show the rest with a warning
+      console.error(e.message);
+      window._loadErrors = (window._loadErrors || []).concat(e.message);
+      results.push([]);
     }
   }
   return { stats: results[0], disconnects: results[1], dbcorrupt: results[2], fraud: results[3], gtab: results[4], diskspace: results[5], appfigures: results[6], gtab_merkur1: results[7], gtab_tardis: results[8], gtab_groups: results[9] };
@@ -1097,6 +1101,16 @@ function getAccessLevel() {
 
 function isLevel1() { return getAccessLevel()==='level1'; }
 
+function showLoadErrors() {
+  let bar = document.getElementById('load-errors');
+  const errs = window._loadErrors || [];
+  if (!errs.length) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'load-errors'; document.body.prepend(bar); }
+  bar.style.cssText = 'background:#fdecea;border-bottom:2px solid #d32f2f;color:#b71c1c;padding:10px 16px;font-family:Inter,sans-serif;font-size:13px';
+  bar.innerHTML = '<b>Some data could not be loaded</b> - those tabs will look empty until the file is fixed:<br>' +
+    errs.map(m => `<span style="font-family:'DM Mono',monospace;font-size:11px">${m.replace(/</g,'&lt;')}</span>`).join('<br>');
+}
+
 async function boot() {
   let data;
   try {
@@ -1107,6 +1121,7 @@ async function boot() {
   }
 
   window._data = data;
+  showLoadErrors();
 
   // Build all tabs
   buildChartsTab(data.stats);
@@ -1131,7 +1146,7 @@ async function boot() {
   setInterval(async()=>{
     try {
       const fresh=await loadAll();
-      window._data=fresh;
+      window._data=fresh; showLoadErrors();
       buildChartsTab(fresh.stats);
       buildDisconnectsTab(fresh.disconnects);
       buildDbCorruptTab(fresh.dbcorrupt);
