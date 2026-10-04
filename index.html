@@ -287,12 +287,43 @@ function normalizeGtab(reports, name) {
   return Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// Stable identity for a club across days. Numbered sites use the number, plus the room name where one
+// number covers two rooms (e.g. Bradford Q / Bradford Q Bingo). Un-numbered sites use a cleaned-up name.
+const normKey = x => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function assignUids(reports) {
+  const twin = new Set();
+  for (const r of reports) { const seen = new Set(); for (const s of r.sites) { const id = String(s.id || ''); if (seen.has(id)) twin.add(id); seen.add(id); } }
+  for (const r of reports) for (const s of r.sites) {
+    const id = String(s.id || '').trim(), name = String(s.name || '').trim();
+    if (/^\d+$/.test(id)) s.uid = twin.has(id) ? id + '|' + normKey(name) : id;
+    else s.uid = (id && !normKey(name).includes(normKey(id))) ? normKey(id + name) : normKey(name || id);
+  }
+  return reports;
+}
+
+const MISSING_ALERT_DAYS = 14;
+const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
+// Clubs seen in earlier complete reports but absent from the latest one (and not manually removed since).
+// fullFrom = first date the brand's report listed every club, not just problem ones.
+function getMissingSites(reports, removed, fullFrom) {
+  const isFullList = r => !fullFrom || r.date >= fullFrom;
+  const sorted = [...reports].sort((a, b) => a.date.localeCompare(b.date));
+  const latest = sorted[sorted.length - 1];
+  if (!latest || !isFullList(latest)) return [];
+  const current = new Set(latest.sites.map(s => s.uid)), lastSeen = {};
+  for (const r of sorted) if (isFullList(r)) for (const s of r.sites) lastSeen[s.uid] = { site: s, date: r.date };
+  return Object.values(lastSeen)
+    .filter(x => !current.has(x.site.uid) && !(removed[x.site.uid] && removed[x.site.uid] >= x.date))
+    .map(x => ({ ...x.site, missing: true, lastSeen: x.date, daysMissing: daysBetween(x.date, latest.date) }))
+    .sort((a, b) => b.daysMissing - a.daysMissing);
+}
+
 function getGtabAlerts(reports) {
   const sorted=[...reports].sort((a,b)=>a.date.localeCompare(b.date));
   const latest=sorted[sorted.length-1];
   const halfAlerts=[], streakAlerts=[], posDays={}, dates=sorted.map(r=>r.date);
   if(latest) for(const s of latest.sites){ if(s.noData) continue; const p=s.installed>0?s.inactive/s.installed:0; if(p>=0.5) halfAlerts.push({...s,pct:Math.round(p*100)}); }
-  for(const r of sorted) for(const s of r.sites){ if(s.noData) continue; for(const pos of (s.positions||[])){ const k=`${s.id}:${pos}`; if(!posDays[k]) posDays[k]={name:s.name,id:s.id,pos,dates:[]}; posDays[k].dates.push(r.date); } }
+  for(const r of sorted) for(const s of r.sites){ if(s.noData) continue; for(const pos of (s.positions||[])){ const k=`${s.uid}:${pos}`; if(!posDays[k]) posDays[k]={name:s.name,id:s.id,uid:s.uid,brand:s.brand,pos,dates:[]}; posDays[k].dates.push(r.date); } }
   // Rolling 14-day window: alert if position inactive 8+ days out of last 14 reports
   const WINDOW=14, THRESHOLD=8;
   const recentDates=dates.slice(-WINDOW);
@@ -303,12 +334,12 @@ function getGtabAlerts(reports) {
       const daysInWindow=[...recentDates].filter(d=>ds.has(d));
       const lastDate=daysInWindow[daysInWindow.length-1];
       const firstDate=daysInWindow[0];
-      streakAlerts.push({id:info.id,name:info.name,pos:info.pos,days:countInWindow,since:firstDate,lastDate:lastDate,window:recentDates.length});
+      streakAlerts.push({id:info.id,uid:info.uid,brand:info.brand,name:info.name,pos:info.pos,days:countInWindow,since:firstDate,lastDate:lastDate,window:recentDates.length});
     }
   }
   // Only keep streak alerts for sites still in the latest report (a removed club shouldn't keep alerting)
-  const current=new Set(latest?latest.sites.map(s=>s.id):[]);
-  return {halfAlerts:halfAlerts.sort((a,b)=>b.pct-a.pct),streakAlerts:streakAlerts.filter(a=>current.has(a.id)),latest};
+  const current=new Set(latest?latest.sites.map(s=>s.uid):[]);
+  return {halfAlerts:halfAlerts.sort((a,b)=>b.pct-a.pct),streakAlerts:streakAlerts.filter(a=>current.has(a.uid)),latest};
 }
 
 //    Tabs                                                                    
@@ -640,9 +671,9 @@ function groupToReports(all, group) {
 
 const sumTotals = r => ({ sites: r.totalSites || r.sites.length, tablets: r.totalInstalled || r.sites.filter(s => !s.noData).reduce((t, s) => t + (s.installed || 0), 0) });
 const GTAB_BRANDS = [
-  { key: 'admiral', label: 'Admiral', ackKey: 'gtab-acks', from: d => d.gtab || [],
+  { key: 'admiral', label: 'Admiral', ackKey: 'gtab-acks', fullFrom: '2026-10-01', from: d => d.gtab || [],
     totals: r => ({ sites: 266, tablets: 9228 }) },
-  { key: 'merkur1', label: 'Merkur1', ackKey: 'gtab-merkur1-acks', from: d => d.gtab_merkur1 || [],
+  { key: 'merkur1', label: 'Merkur1', ackKey: 'gtab-merkur1-acks', fullFrom: '2026-10-04', from: d => d.gtab_merkur1 || [],
     totals: r => ({ sites: r.totalSites || r.sites.length, tablets: r.totalInstalled || 0 }) },
   { key: 'tardis', label: 'Tardis', ackKey: 'gtab-tardis-acks', showBrand: true, siteLabel: s => s.name, from: d => tardisToReports(d.gtab_tardis),
     totals: r => ({ sites: r.totalSites, tablets: r.totalInstalled }) },
@@ -653,17 +684,20 @@ const GTAB_BRANDS = [
 ];
 const BRAND_COLOURS = { 'Moto': '#f97316', 'Welcome Break': '#6366f1', 'Extra': '#14b8a6' };
 
-function countGtabAlerts(brandReports, ackKey) {
+const brandReports = (cfg, d) => assignUids(cfg.from(d || {}));
+function countGtabAlerts(brandReports, ackKey, fullFrom) {
   const { halfAlerts, streakAlerts } = getGtabAlerts(brandReports);
-  return halfAlerts.filter(a => !isAcked(ackKey, `half:${a.id}`, a.date)).length
-       + streakAlerts.filter(a => !isAcked(ackKey, `streak:${a.id}:${a.pos}`, a.lastDate)).length;
+  const missing = getMissingSites(brandReports, getAcked(ackKey + '-removed'), fullFrom).filter(m => m.daysMissing >= MISSING_ALERT_DAYS);
+  return halfAlerts.filter(a => !isAcked(ackKey, `half:${a.uid}`, a.date)).length
+       + streakAlerts.filter(a => !isAcked(ackKey, `streak:${a.uid}:${a.pos}`, a.lastDate)).length
+       + missing.filter(m => !isAcked(ackKey, `missing:${m.uid}`, m.lastSeen)).length;
 }
 
 function buildGtabTab(allData) {
   const container=document.getElementById('tab-gtab');
   if(!container) return;
   container.innerHTML='';
-  const data = {}; GTAB_BRANDS.forEach(cfg => data[cfg.key] = cfg.from(allData || {}));
+  const data = {}; GTAB_BRANDS.forEach(cfg => data[cfg.key] = brandReports(cfg, allData));
   const rebuild = () => { buildGtabTab(allData); buildTabs(computeAlertCounts(window._data)); };
 
   const subTabBar=el('div',{style:{display:'flex',gap:'6px',marginBottom:'16px',flexWrap:'wrap'}});
@@ -678,11 +712,21 @@ function buildGtabTab(allData) {
     const {halfAlerts,streakAlerts,latest}=getGtabAlerts(brandReports);
 
     // Alert banners
-    halfAlerts.filter(a=>!isAcked(cfg.ackKey,`half:${a.id}`,a.date)).forEach(a=>{
-      contentArea.appendChild(critBanner(label(a),`${a.inactive} of ${a.installed} tablets inactive (${fmt(latest.date)})`,`${a.pct}%`,()=>{setAcked(cfg.ackKey,`half:${a.id}`,a.date);rebuild();}));
+    halfAlerts.filter(a=>!isAcked(cfg.ackKey,`half:${a.uid}`,a.date)).forEach(a=>{
+      contentArea.appendChild(critBanner(label(a),`${a.inactive} of ${a.installed} tablets inactive (${fmt(latest.date)})`,`${a.pct}%`,()=>{setAcked(cfg.ackKey,`half:${a.uid}`,a.date);rebuild();}));
     });
-    streakAlerts.filter(a=>!isAcked(cfg.ackKey,`streak:${a.id}:${a.pos}`,a.lastDate)).forEach(a=>{
-      contentArea.appendChild(warnBanner(label(a),`Position ${a.pos} inactive ${a.days} of last ${a.window||14} days (since ${fmt(a.since)})`,`${a.days}d`,()=>{setAcked(cfg.ackKey,`streak:${a.id}:${a.pos}`,a.lastDate);rebuild();}));
+    streakAlerts.filter(a=>!isAcked(cfg.ackKey,`streak:${a.uid}:${a.pos}`,a.lastDate)).forEach(a=>{
+      contentArea.appendChild(warnBanner(label(a),`Position ${a.pos} inactive ${a.days} of last ${a.window||14} days (since ${fmt(a.since)})`,`${a.days}d`,()=>{setAcked(cfg.ackKey,`streak:${a.uid}:${a.pos}`,a.lastDate);rebuild();}));
+    });
+
+    // Clubs missing from the email: kept on the list until removed by hand, alert after 14 days
+    const removedKey = cfg.ackKey + '-removed', removed = getAcked(removedKey);
+    const missing = getMissingSites(brandReports, removed, cfg.fullFrom);
+    const removeBtn = m => { const b = el('button', {style:{background:'#fff',border:'1px solid #d32f2f',borderRadius:'6px',color:'#d32f2f',fontWeight:'700',fontSize:'11px',padding:'4px 10px',cursor:'pointer',whiteSpace:'nowrap',marginLeft:'6px'},
+        onClick:e=>{ e.stopPropagation(); if(b.dataset.armed){ setAcked(removedKey, m.uid, latest.date); rebuild(); } else { b.dataset.armed='1'; b.textContent='Confirm remove'; setTimeout(()=>{ delete b.dataset.armed; b.textContent='Remove club'; },4000); } }}, 'Remove club'); return b; };
+    missing.filter(m=>m.daysMissing>=MISSING_ALERT_DAYS && !isAcked(cfg.ackKey,`missing:${m.uid}`,m.lastSeen)).forEach(m=>{
+      const banner=warnBanner(label(m),`Missing from the report for ${m.daysMissing} days (last seen ${fmt(m.lastSeen)})`,`${m.daysMissing}d`,()=>{setAcked(cfg.ackKey,`missing:${m.uid}`,m.lastSeen);rebuild();});
+      banner.insertBefore(removeBtn(m), banner.lastChild); contentArea.appendChild(banner);
     });
 
     // Latest report - every site, click a row for its position history
@@ -694,8 +738,8 @@ function buildGtabTab(allData) {
       const tbl=el('table',null,el('thead',null,el('tr',null,...heads.map((h,i)=>el('th',{style:{textAlign:i>off&&i<off+4?'right':'left'}},h)))));
       const tbody=el('tbody');
       [...latest.sites].sort((a,b)=>{if(a.noData&&!b.noData)return 1;if(!a.noData&&b.noData)return -1;if(b.inactive!==a.inactive)return b.inactive-a.inactive;return a.name.localeCompare(b.name);}).forEach(site=>{
-        const pct=site.installed>0?Math.round(site.inactive/site.installed*100):0, isHalf=pct>=50, hasStreak=streakAlerts.some(a=>a.id===site.id);
-        tbody.appendChild(el('tr',{style:{background:isHalf?'rgba(211,47,47,0.05)':'none',cursor:'pointer'},onClick:()=>showSiteDetail(site.id,label(site),brandReports,contentArea,card)},
+        const pct=site.installed>0?Math.round(site.inactive/site.installed*100):0, isHalf=pct>=50, hasStreak=streakAlerts.some(a=>a.uid===site.uid);
+        tbody.appendChild(el('tr',{style:{background:isHalf?'rgba(211,47,47,0.05)':'none',cursor:'pointer'},onClick:()=>showSiteDetail(site.uid,label(site),brandReports,contentArea,card)},
           ...(cfg.showBrand?[el('td',{style:{color:BRAND_COLOURS[site.brand]||'#666',fontSize:'11px',fontWeight:'600',whiteSpace:'nowrap'}},site.brand||'')]:[]),
           el('td',{style:{color:isHalf?'#d32f2f':hasStreak?'#f57f17':site.inactive>0?'#e65100':'#333',fontWeight:isHalf||site.inactive>0?'600':'400'}},label(site)),
           el('td',{style:{textAlign:'right',color:'#888'}},String(site.installed)),
@@ -705,9 +749,32 @@ function buildGtabTab(allData) {
           el('td',{style:{color:'#1976d2',fontSize:'11px',whiteSpace:'nowrap'}},'view history')
         ));
       });
+      missing.forEach(m=>{
+        tbody.appendChild(el('tr',{style:{background:'#fafafa',cursor:'pointer'},onClick:()=>showSiteDetail(m.uid,label(m),brandReports,contentArea,card)},
+          ...(cfg.showBrand?[el('td',{style:{color:'#aaa',fontSize:'11px',whiteSpace:'nowrap'}},m.brand||'')]:[]),
+          el('td',{style:{color:'#999'}},label(m)),
+          el('td',{style:{textAlign:'right',color:'#bbb'}},String(m.installed||'')),
+          el('td',{style:{textAlign:'right',color:'#bbb'}},'--'),
+          el('td',{style:{textAlign:'right',color:'#bbb'}},'--'),
+          el('td',{style:{color:m.daysMissing>=MISSING_ALERT_DAYS?'#e65100':'#999',fontStyle:'italic'}},`Not in report for ${m.daysMissing} day${m.daysMissing===1?'':'s'} (last seen ${fmt(m.lastSeen)})`),
+          el('td',null,removeBtn(m))
+        ));
+      });
       tbl.appendChild(tbody); card.appendChild(el('div',{style:{overflowX:'auto'}},tbl));
     }
     contentArea.appendChild(card);
+
+    // Clubs removed by hand - can be restored
+    const removedList = Object.keys(removed);
+    if (removedList.length) {
+      const names = {}; for (const r of brandReports) for (const s of r.sites) names[s.uid] = label(s);
+      const box = el('div',{className:'card',style:{marginTop:'16px'}}, el('div',{className:'card-header'},el('h2',{className:'card-title',style:{color:'#555'}},`Removed clubs (${removedList.length})`)));
+      removedList.forEach(uid => box.appendChild(el('div',{style:{display:'flex',alignItems:'center',gap:'10px',padding:'6px 16px',fontSize:'13px',color:'#666'}},
+        el('span',{style:{flex:'1'}},`${names[uid]||uid} - removed ${fmt(removed[uid])}`),
+        el('button',{style:{background:'#fff',border:'1px solid #1976d2',borderRadius:'6px',color:'#1976d2',fontWeight:'600',fontSize:'11px',padding:'4px 10px',cursor:'pointer'},
+          onClick:()=>{ const r=getAcked(removedKey); delete r[uid]; try{localStorage.setItem(removedKey,JSON.stringify(r));}catch{} rebuild(); }},'Restore'))));
+      contentArea.appendChild(box);
+    }
 
     // History
     const hist=el('div',{className:'card',style:{marginTop:'16px'}});
@@ -756,7 +823,7 @@ function buildGtabTab(allData) {
     const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
     [...sorted].reverse().forEach(r=>{
-      const site=r.sites.find(s=>s.id===siteId);
+      const site=r.sites.find(s=>s.uid===siteId);
       const dayName=days[new Date(r.date).getDay()];
       if(!site){
         // Site not in this report at all
@@ -801,7 +868,7 @@ function buildGtabTab(allData) {
 
 
   GTAB_BRANDS.forEach(cfg=>{
-    const n=data[cfg.key].length?countGtabAlerts(data[cfg.key],cfg.ackKey):0;
+    const n=data[cfg.key].length?countGtabAlerts(data[cfg.key],cfg.ackKey,cfg.fullFrom):0;
     const b=el('button',{className:'tb','data-brand':cfg.key,onClick:()=>{window._activeGtabSubTab=cfg.key;renderBrand(cfg);}},cfg.label+(n?` (${n})`:''));
     subTabBar.appendChild(b);
   });
@@ -845,7 +912,7 @@ function computeAlertCounts(data) {
   const dbCounts=getDbCounts(data.dbcorrupt);
   const dbAlerts=Object.entries(dbCounts).filter(([site,v])=>v.count>3&&!isAcked('dbcorrupt-acks',site,v.dates.sort().slice(-1)[0])).length;
   const fraudAlerts=Object.entries(getFraudAlerts(data.fraud)).filter(([site,v])=>!isAcked('fraud-acks',site,v.last)).length;
-  const totalGtabAlerts=GTAB_BRANDS.reduce((t,cfg)=>{const r=cfg.from(data);return t+(r.length?countGtabAlerts(r,cfg.ackKey):0);},0);
+  const totalGtabAlerts=GTAB_BRANDS.reduce((t,cfg)=>{const r=brandReports(cfg,data);return t+(r.length?countGtabAlerts(r,cfg.ackKey,cfg.fullFrom):0);},0);
 
   const diskAcked2=getAcked('diskspace-acks');
   const diskAlerts=(data.diskspace||[]).filter(a=>!isAcked('diskspace-acks',a.datetime,a.datetime)).length>0?1:0;
