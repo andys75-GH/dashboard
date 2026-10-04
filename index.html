@@ -306,7 +306,9 @@ function getGtabAlerts(reports) {
       streakAlerts.push({id:info.id,name:info.name,pos:info.pos,days:countInWindow,since:firstDate,lastDate:lastDate,window:recentDates.length});
     }
   }
-  return {halfAlerts:halfAlerts.sort((a,b)=>b.pct-a.pct),streakAlerts,latest};
+  // Only keep streak alerts for sites still in the latest report (a removed club shouldn't keep alerting)
+  const current=new Set(latest?latest.sites.map(s=>s.id):[]);
+  return {halfAlerts:halfAlerts.sort((a,b)=>b.pct-a.pct),streakAlerts:streakAlerts.filter(a=>current.has(a.id)),latest};
 }
 
 //    Tabs                                                                    
