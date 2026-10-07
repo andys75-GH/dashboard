@@ -672,7 +672,8 @@ function groupToReports(all, group) {
 const sumTotals = r => ({ sites: r.totalSites || r.sites.length, tablets: r.totalInstalled || r.sites.filter(s => !s.noData).reduce((t, s) => t + (s.installed || 0), 0) });
 const GTAB_BRANDS = [
   { key: 'admiral', label: 'Admiral', ackKey: 'gtab-acks', fullFrom: '2026-10-01', from: d => d.gtab || [],
-    totals: r => ({ sites: 266, tablets: 9228 }) },
+    // Before 1 Oct the report only listed problem clubs, so fall back to the totals the report gave
+    totals: r => r.date >= '2026-10-01' ? sumTotals({ ...r, totalSites: 0, totalInstalled: 0 }) : { sites: r.totalSites || 266, tablets: r.totalInstalled || 9228 } },
   { key: 'merkur1', label: 'Merkur1', ackKey: 'gtab-merkur1-acks', fullFrom: '2026-10-04', from: d => d.gtab_merkur1 || [],
     totals: r => ({ sites: r.totalSites || r.sites.length, tablets: r.totalInstalled || 0 }) },
   { key: 'tardis', label: 'Tardis', ackKey: 'gtab-tardis-acks', showBrand: true, siteLabel: s => s.name, from: d => tardisToReports(d.gtab_tardis),
