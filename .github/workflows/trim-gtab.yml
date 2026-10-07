@@ -1,0 +1,26 @@
+name: Trim GTab history
+
+on:
+  schedule:
+    - cron: '30 2 * * *'   # 02:30 UTC (03:30 UK summer time) - no GTab flows run then
+  workflow_dispatch:        # "Run workflow" button on the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  trim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trim old reports and update the club list
+        run: python3 scripts/trim_gtab.py
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then echo "Nothing to trim"; exit 0; fi
+          git commit -m "Trim GTab history"
+          for i in 1 2 3; do git pull --rebase && git push && exit 0; sleep 20; done
+          exit 1
